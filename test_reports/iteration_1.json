@@ -1,0 +1,30 @@
+{
+  "summary": "Backend endpoints all work except /api/rom/translate which returns 500 due to Gemini 3.1 Pro upstream (litellm ServiceUnavailableError - model 'gemini-3.1-pro-preview'). Frontend UI loads and full extract flow works end-to-end; translate flow surfaces 'Translation failed' toast + ERROR status in terminal.",
+  "tested_scope": ["backend", "frontend", "integration"],
+  "passed": [
+    "GET /api/languages returns 11 supported languages including cs/en/de/...",
+    "POST /api/rom/extract accepts valid .gb (2KB, 5 embedded ASCII strings) and returns session_id, rom_size=2048, rom_type='Game Boy', 5 extracted strings with offsets/ids",
+    "POST /api/rom/extract rejects .txt with 400",
+    "POST /api/rom/extract rejects 100-byte file with 400",
+    "POST /api/rom/translate rejects unsupported target_language='xx' with 400",
+    "POST /api/rom/patch returns 2048-byte body (same size), X-Patched-Count=5, patched bytes at offset 100 exactly equal 'XXXXXXXXXXX' as expected",
+    "GET /api/history returns 5 records, most recent first",
+    "Frontend loads at REACT_APP_BACKEND_URL; all bento cards render (01 Cartridge, 02 Config, 03 Recent, extraction.log terminal, 04 Session Stats)",
+    "Frontend: file input attach -> filename 'rom_test.gb' shown -> SCAN & EXTRACT -> translation-table populates with 4 rows",
+    "Frontend: language select opens and switches to CS/EN; mode toggle (view/patch) works; DOWNLOAD PATCHED ROM correctly disabled before translation completes"
+  ],
+  "failed": [
+    {
+      "area": "backend / LLM integration",
+      "issue": "POST /api/rom/translate returns HTTP 500 for both CS (5 strings) and CS (3 strings). Backend log: 'litellm.ServiceUnavailableError: OpenAIException - upstream connect error or disconnect/reset before headers. reset reason: connection termination' from _translate_batch -> LlmChat.with_model('gemini','gemini-3.1-pro-preview').send_message. Consequence: DOWNLOAD PATCHED ROM never enables in frontend and terminal shows ERROR / 'Translation failed' toast.",
+      "evidence": "curl POST /api/rom/translate -> 'Internal Server Error'; /var/log/supervisor/backend.err.log shows ServiceUnavailableError from litellm at server.py:223. Frontend screenshot shows 'Translation failed' toast and terminal 'ERROR' status.",
+      "priority": "HIGH"
+    }
+  ],
+  "action_items": [
+    "Investigate Gemini 3.1 Pro model id 'gemini-3.1-pro-preview' with EMERGENT_LLM_KEY via emergentintegrations — upstream returns connection termination. Consider (a) verifying the exact supported model id (e.g. 'gemini-2.5-pro' / current Emergent-supported Gemini id) or (b) adding a retry/backoff + graceful fallback in _translate_batch so the whole request doesn't 500. Currently a single upstream hiccup fails the entire translate call and breaks the patch-mode UX."
+  ],
+  "success_rate": {"backend": "86% (6/7 endpoints/behaviors OK, translate failing)", "frontend": "90% (extract+UI OK, translate-dependent path blocked by backend)"},
+  "retest_needed": true,
+  "full_testing_deferred": true
+}
