@@ -15,6 +15,8 @@ import {
   XCircle,
   Settings2,
   Sparkles,
+  FileText,
+  FileUp,
 } from "lucide-react";
 import {
   Select,
@@ -31,7 +33,7 @@ const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
 
 const MODES = [
-  { id: "view", label: "View Translations", icon: Languages },
+  { id: "export", label: "Export as Text", icon: FileText },
   { id: "patch", label: "Generate Patched ROM", icon: Download },
 ];
 
@@ -45,7 +47,7 @@ export default function RomTranslator() {
   const [aiSettings, setAiSettings] = useState(loadSettings());
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [targetLang, setTargetLang] = useState("cs");
-  const [mode, setMode] = useState("view");
+  const [mode, setMode] = useState("export");
   const [file, setFile] = useState(null);
   const [session, setSession] = useState(null);
   const [translations, setTranslations] = useState([]);
@@ -55,6 +57,7 @@ export default function RomTranslator() {
   const [history, setHistory] = useState([]);
   const [dragActive, setDragActive] = useState(false);
   const fileInput = useRef(null);
+  const importInput = useRef(null);
   const pollRef = useRef(null);
 
   const pushLog = useCallback((line, kind = "info") => {
@@ -262,6 +265,62 @@ export default function RomTranslator() {
     }
   };
 
+  const exportTxt = async () => {
+    if (!session || !translations.length) return;
+    pushLog(`> EXPORT TXT :: ${translations.length} strings...`, "cmd");
+    try {
+      const r = await axios.post(
+        `${API}/rom/export`,
+        { session_id: session.session_id, translations },
+        { responseType: "blob" }
+      );
+      const blob = new Blob([r.data], { type: "text/plain; charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      const base = session.filename.replace(/\.(gb|gbc|gba)$/i, "");
+      a.href = url;
+      a.download = `${base}_translations.txt`;
+      a.click();
+      URL.revokeObjectURL(url);
+      pushLog(`  DONE. TXT downloaded — edit and re-upload via 'Insert Translation'.`, "ok");
+      toast.success("Textový soubor stažen!");
+    } catch (e) {
+      pushLog(`! EXPORT FAILED: ${e.message}`, "err");
+      toast.error("Export failed");
+    }
+  };
+
+  const importAndPatch = async (uploadedFile) => {
+    if (!uploadedFile || !session) return;
+    pushLog(`> INSERT TRANSLATION :: reading ${uploadedFile.name}...`, "cmd");
+    try {
+      const fd = new FormData();
+      fd.append("session_id", session.session_id);
+      fd.append("file", uploadedFile);
+      const r = await axios.post(`${API}/rom/import`, fd, {
+        headers: { "Content-Type": "multipart/form-data" },
+        responseType: "blob",
+      });
+      const patched = r.headers["x-patched-count"] || "?";
+      const missed = r.headers["x-missed-count"] || "0";
+      const blob = new Blob([r.data], { type: "application/octet-stream" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      const base = session.filename.replace(/\.(gb|gbc|gba)$/i, "");
+      const ext = session.filename.match(/\.(gb|gbc|gba)$/i)?.[0] || ".gb";
+      a.href = url;
+      a.download = `${base}_translated${ext}`;
+      a.click();
+      URL.revokeObjectURL(url);
+      pushLog(`  DONE. Patched ${patched} strings (${missed} missed). ROM downloaded.`, "ok");
+      toast.success(`Patchnuto ${patched} řetězců, ROMka stažena!`);
+    } catch (e) {
+      const msg = e.response?.data?.detail || e.message;
+      pushLog(`! INSERT FAILED: ${msg}`, "err");
+      toast.error(`Insert failed: ${msg}`);
+    }
+  };
+
   return (
     <div className="min-h-screen retro-grid text-neutral-50 font-display" data-testid="app-root">
       {/* Header */}
@@ -459,7 +518,7 @@ export default function RomTranslator() {
                 >
                   <Icon className="w-3.5 h-3.5" />
                   <span className="hidden sm:inline">{m.label}</span>
-                  <span className="sm:hidden">{m.id === "view" ? "View" : "Patch"}</span>
+                  <span className="sm:hidden">{m.id === "export" ? "Export" : "Patch"}</span>
                 </button>
               );
             })}
@@ -508,6 +567,42 @@ export default function RomTranslator() {
             >
               <Download className="w-4 h-4" /> DOWNLOAD PATCHED ROM
             </button>
+          )}
+
+          {mode === "export" && (
+            <>
+              <button
+                onClick={exportTxt}
+                disabled={status !== "done"}
+                className="mt-3 w-full h-11 bg-transparent border border-[#8BAC0F] text-[#9BBC0F] font-display font-bold text-sm tracking-wide rounded-sm disabled:opacity-30 disabled:cursor-not-allowed hover:bg-[#8BAC0F]/10 transition-colors flex items-center justify-center gap-2"
+                data-testid="export-txt-btn"
+              >
+                <FileText className="w-4 h-4" /> EXPORT AS TEXT FILE
+              </button>
+              <input
+                ref={importInput}
+                type="file"
+                accept=".txt,text/plain"
+                className="hidden"
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) importAndPatch(f);
+                  e.target.value = "";
+                }}
+                data-testid="import-txt-input"
+              />
+              <button
+                onClick={() => importInput.current?.click()}
+                disabled={!session}
+                className="mt-2 w-full h-11 bg-transparent border border-neutral-700 hover:border-[#8BAC0F] text-neutral-300 hover:text-[#9BBC0F] font-display font-bold text-sm tracking-wide rounded-sm disabled:opacity-30 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2"
+                data-testid="insert-translation-btn"
+              >
+                <FileUp className="w-4 h-4" /> INSERT TRANSLATION
+              </button>
+              <p className="font-mono text-[10px] text-neutral-600 mt-2 leading-relaxed">
+                Export → uprav .txt v jakémkoli editoru → Insert Translation nahraje soubor a přepíše ROMku.
+              </p>
+            </>
           )}
         </section>
 
@@ -583,7 +678,7 @@ export default function RomTranslator() {
             <StatRow label="Found in ROM" value={session?.found_total ?? "—"} />
             <StatRow label="Loaded" value={session?.strings?.length ?? "—"} highlight />
             <StatRow label="Target" value={targetLang.toUpperCase()} />
-            <StatRow label="Mode" value={mode === "view" ? "VIEW" : "PATCH"} />
+            <StatRow label="Mode" value={mode === "export" ? "EXPORT TXT" : "PATCH"} />
             <StatRow label="AI" value={<span className="inline-flex items-center gap-1"><Sparkles className="w-3 h-3" />{(aiSettings.provider || "emergent").toUpperCase()}</span>} />
             <StatRow
               label="Translated"

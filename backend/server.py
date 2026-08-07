@@ -863,6 +863,114 @@ async def cache_clear(target_language: Optional[str] = None):
     return {"deleted": r.deleted_count}
 
 
+@api_router.post("/rom/export")
+async def export_translations(req: PatchRequest):
+    """Export translations to a human-editable plain text file.
+    Format: `original<TAB>translated` per line, with a small header.
+    The user can edit the file freely and later re-upload via /api/rom/import
+    to patch the ROM with their edits.
+    """
+    sess = await db.rom_sessions.find_one({"session_id": req.session_id}, {"_id": 0})
+    if not sess:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    lines = [
+        "# ROM Translator :: translation export",
+        f"# ROM: {sess.get('filename', 'unknown')}",
+        f"# Encoding: {sess.get('encoding', 'ascii')}",
+        f"# Target language: {sess.get('target_language', '?')}",
+        "# Format: <original>\\t<translated>   (edit the RIGHT column freely, keep the LEFT column exactly)",
+        "# Lines starting with # are ignored on import.",
+        "",
+    ]
+    for t in req.translations:
+        # Sanitize tabs and newlines in each field
+        orig = t.original.replace("\t", " ").replace("\r", " ").replace("\n", " ")
+        tran = t.translated.replace("\t", " ").replace("\r", " ").replace("\n", " ")
+        lines.append(f"{orig}\t{tran}")
+
+    content = "\n".join(lines) + "\n"
+    fn = sess.get("filename", "rom.gb")
+    base = os.path.splitext(fn)[0]
+    out_name = f"{base}_translations.txt"
+    return Response(
+        content=content,
+        media_type="text/plain; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{out_name}"'},
+    )
+
+
+@api_router.post("/rom/import")
+async def import_translations(
+    session_id: str = Form(...),
+    file: UploadFile = File(...),
+):
+    """Upload a TXT file with edited translations and patch the ROM in place.
+    Returns the patched ROM binary as a download.
+    """
+    p = rom_path(session_id)
+    if not p.exists():
+        raise HTTPException(status_code=404, detail="Session not found — the ROM must first be scanned via /api/rom/extract")
+
+    raw = (await file.read()).decode("utf-8", errors="replace")
+
+    # Parse: skip comments (#) and empty lines; split on FIRST tab
+    pairs = []  # (original, translated)
+    for line in raw.splitlines():
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        if "\t" not in s:
+            continue
+        orig, _, tran = s.partition("\t")
+        pairs.append((orig.strip("\r\n"), tran.strip("\r\n")))
+
+    if not pairs:
+        raise HTTPException(status_code=400, detail="No translation lines found in the uploaded file")
+
+    # Load ROM & encoding
+    sess = await db.rom_sessions.find_one({"session_id": session_id}, {"_id": 0})
+    enc = (sess or {}).get("encoding", "ascii")
+    data = bytearray(p.read_bytes())
+
+    # Rebuild the extraction to get canonical offset mapping
+    strings = extract_strings_from_bytes(bytes(data), encoding=enc)
+    text_to_meta = {s.text: (s.offset, s.length) for s in strings}
+
+    patched = 0
+    missed = 0
+    for orig, tran in pairs:
+        meta = text_to_meta.get(orig)
+        if not meta:
+            missed += 1
+            continue
+        offset, length = meta
+        if enc == "pokemon_gen3":
+            payload = encode_pokemon_gen3(tran, length)
+        else:
+            raw_bytes = tran.encode("ascii", errors="replace")
+            if len(raw_bytes) > length:
+                payload = raw_bytes[:length]
+            else:
+                payload = raw_bytes + b" " * (length - len(raw_bytes))
+        data[offset:offset + length] = payload
+        patched += 1
+
+    fn = (sess or {}).get("filename", "rom.gb")
+    base, ext = os.path.splitext(fn)
+    out_name = f"{base}_translated{ext}"
+
+    return Response(
+        content=bytes(data),
+        media_type="application/octet-stream",
+        headers={
+            "Content-Disposition": f'attachment; filename="{out_name}"',
+            "X-Patched-Count": str(patched),
+            "X-Missed-Count": str(missed),
+        },
+    )
+
+
 @api_router.post("/rom/patch")
 async def patch_rom(req: PatchRequest):
     p = rom_path(req.session_id)
