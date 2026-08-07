@@ -73,6 +73,30 @@ export default function AiSettingsDialog({ open, onOpenChange, providers, settin
     onOpenChange(false);
   };
 
+  const handleTest = async () => {
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const r = await axios.post(`${API}/ai/test`, {
+        provider,
+        model: model || pInfo?.default,
+        api_key: apiKey.trim(),
+      }, { timeout: 45000 });
+      setTestResult(r.data);
+      if (r.data.ok) {
+        toast.success(`Klíč funguje! Odpověď: "${r.data.reply}"`);
+      } else {
+        toast.error(r.data.friendly || r.data.error || "Test selhal");
+      }
+    } catch (e) {
+      const msg = e.response?.data?.detail || e.message;
+      setTestResult({ ok: false, error: msg, friendly: msg });
+      toast.error("Test selhal: " + msg);
+    } finally {
+      setTesting(false);
+    }
+  };
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="bg-neutral-900 border-neutral-800 rounded-sm max-w-lg" data-testid="ai-settings-dialog">
