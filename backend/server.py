@@ -423,7 +423,19 @@ async def _translate_batch(
         return []
 
     prompt = _build_translation_prompt(target_lang_name, batch)
-    text = (await _call_llm(prompt, provider, model, api_key)).strip()
+
+    # Try primary provider, auto-fallback to Emergent Universal Key on quota / upstream errors
+    try:
+        text = (await _call_llm(prompt, provider, model, api_key)).strip()
+    except HTTPException as e:
+        msg = str(e.detail).lower()
+        is_quota = ("429" in msg or "resource_exhausted" in msg or "quota" in msg or "rate" in msg)
+        is_upstream = e.status_code in (502, 503, 504)
+        if provider != "emergent" and EMERGENT_LLM_KEY and (is_quota or is_upstream):
+            logging.warning(f"Primary {provider} failed ({e.detail[:120]}), falling back to Emergent")
+            text = (await _call_llm(prompt, "emergent", None, None)).strip()
+        else:
+            raise
 
     # Strip code fences if present
     if text.startswith("```"):
@@ -468,8 +480,11 @@ async def translate_rom_start(req: TranslateRequest):
         "status": "running",
         "total": len(req.strings),
         "done": 0,
+        "translated_count": 0,
+        "failed_count": 0,
         "translations": [],
         "error": None,
+        "errors": [],
         "session_id": req.session_id,
         "target_language": req.target_language,
         "provider": provider,
@@ -482,18 +497,33 @@ async def translate_rom_start(req: TranslateRequest):
 
         async def run(batch):
             async with sem:
+                failed = False
+                err_msg = None
                 try:
                     out = await _translate_batch(lang_name, batch, provider, req.model, req.api_key)
+                    # Consider "translated" only if any output differs from input
+                    real_translated = sum(1 for t, s in zip(out, batch) if t.translated != s.text)
+                    JOBS[job_id]["translated_count"] += real_translated
                 except Exception as e:
-                    logging.warning(f"Batch failed, keeping originals: {e}")
+                    failed = True
+                    err_msg = str(getattr(e, "detail", None) or e)[:250]
+                    logging.warning(f"Batch failed: {err_msg}")
                     out = [TranslatedString(id=s.id, original=s.text, translated=s.text) for s in batch]
+                    JOBS[job_id]["failed_count"] += len(batch)
                 JOBS[job_id]["done"] += len(batch)
                 JOBS[job_id]["translations"].extend([t.model_dump() for t in out])
+                if failed and err_msg and err_msg not in JOBS[job_id]["errors"]:
+                    JOBS[job_id]["errors"].append(err_msg)
                 return out
 
         try:
             await asyncio.gather(*[run(b) for b in batches])
-            JOBS[job_id]["status"] = "done"
+            # If nothing actually translated, mark as error
+            if JOBS[job_id]["translated_count"] == 0 and JOBS[job_id]["failed_count"] > 0:
+                JOBS[job_id]["status"] = "error"
+                JOBS[job_id]["error"] = "All batches failed. First error: " + (JOBS[job_id]["errors"][0] if JOBS[job_id]["errors"] else "unknown")
+            else:
+                JOBS[job_id]["status"] = "done"
             await db.rom_sessions.update_one(
                 {"session_id": req.session_id},
                 {"$set": {"target_language": req.target_language,
@@ -517,8 +547,11 @@ async def translate_rom_status(job_id: str):
         "status": job["status"],
         "total": job["total"],
         "done": job["done"],
+        "translated_count": job.get("translated_count", 0),
+        "failed_count": job.get("failed_count", 0),
         "translations": job["translations"],
         "error": job["error"],
+        "errors": job.get("errors", []),
     }
 
 
