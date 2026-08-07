@@ -377,9 +377,18 @@ export default function RomTranslator() {
               <SelectValue />
             </SelectTrigger>
             <SelectContent className="bg-neutral-900 border-neutral-800 rounded-sm">
-              {[100, 250, 500, 1000, 2000, 5000].map((n) => (
+              {[100, 250, 500, 1000, 2000, 5000, 0].map((n) => (
                 <SelectItem key={n} value={String(n)} className="font-mono text-sm" data-testid={`max-strings-option-${n}`}>
-                  {n === 5000 ? "MAX (5000 strings)" : `${n} strings`} {n >= 2000 && <span className="text-[#C7305C] ml-2">(slow · high LLM cost)</span>}
+                  {n === 0
+                    ? "UNLIMITED (all strings)"
+                    : n === 5000
+                    ? "5000 strings"
+                    : `${n} strings`}
+                  {(n === 0 || n >= 2000) && (
+                    <span className="text-[#C7305C] ml-2">
+                      {n === 0 ? "(⚠ can be huge · high LLM cost)" : "(slow · high LLM cost)"}
+                    </span>
+                  )}
                 </SelectItem>
               ))}
             </SelectContent>

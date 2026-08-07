@@ -154,7 +154,8 @@ LANGUAGE_NAMES = {
 
 MIN_STRING_LEN = 4
 DEFAULT_MAX_STRINGS = 500     # sensible default per extract
-HARD_MAX_STRINGS = 5000       # hard cap regardless of user choice
+HARD_MAX_STRINGS = 100000     # hard cap regardless of user choice (protects RAM)
+UNLIMITED_SENTINEL = 0        # 0 or negative == "no user cap; use HARD_MAX_STRINGS"
 BATCH_SIZE = 20               # bigger batches -> fewer Gemini calls at scale
 MAX_PARALLEL = 8              # parallel batch calls
 PRINTABLE_RE = re.compile(rb"[\x20-\x7E]{%d,}" % MIN_STRING_LEN)
@@ -208,7 +209,11 @@ def extract_gen3_from_bytes(data: bytes, max_strings: int) -> List[ExtractedStri
 
 
 def extract_strings_from_bytes(data: bytes, encoding: str = "ascii", max_strings: int = DEFAULT_MAX_STRINGS) -> List[ExtractedString]:
-    max_strings = min(max(max_strings, 10), HARD_MAX_STRINGS)
+    # 0 or negative means "no user cap" -> use HARD_MAX_STRINGS
+    if max_strings <= 0:
+        max_strings = HARD_MAX_STRINGS
+    else:
+        max_strings = min(max(max_strings, 10), HARD_MAX_STRINGS)
     if encoding == "pokemon_gen3":
         return extract_gen3_from_bytes(data, max_strings)
     return extract_ascii_from_bytes(data, max_strings)
