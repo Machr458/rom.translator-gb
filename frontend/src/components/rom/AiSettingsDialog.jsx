@@ -58,7 +58,8 @@ export default function AiSettingsDialog({ open, onOpenChange, providers, settin
 
   const handleSave = () => {
     const finalModel = model || pInfo?.default || "";
-    const next = { provider, model: finalModel, apiKey: provider === "emergent" ? "" : apiKey.trim() };
+    // For emergent we now allow an optional user key. For non-emergent providers, key is required.
+    const next = { provider, model: finalModel, apiKey: apiKey.trim() };
     saveSettings(next);
     onSave(next);
     onOpenChange(false);
@@ -119,8 +120,8 @@ export default function AiSettingsDialog({ open, onOpenChange, providers, settin
             <label className="font-mono text-[10px] uppercase text-neutral-500 tracking-wider mb-2 block flex items-center gap-2">
               API Key
               {provider === "emergent" && (
-                <span className="inline-flex items-center gap-1 text-[#8BAC0F] normal-case tracking-normal">
-                  <Sparkles className="w-3 h-3" /> not required
+                <span className="inline-flex items-center gap-1 text-neutral-400 normal-case tracking-normal">
+                  <Sparkles className="w-3 h-3" /> optional (leave empty = server default)
                 </span>
               )}
             </label>
@@ -129,8 +130,7 @@ export default function AiSettingsDialog({ open, onOpenChange, providers, settin
               value={apiKey}
               onChange={(e) => setApiKey(e.target.value)}
               placeholder={pInfo?.keyHint || "Enter API key"}
-              disabled={provider === "emergent"}
-              className="w-full h-11 bg-neutral-950 border border-neutral-700 rounded-sm px-3 font-mono text-sm placeholder:text-neutral-600 focus:outline-none focus:border-[#8BAC0F] disabled:opacity-40"
+              className="w-full h-11 bg-neutral-950 border border-neutral-700 rounded-sm px-3 font-mono text-sm placeholder:text-neutral-600 focus:outline-none focus:border-[#8BAC0F]"
               data-testid="api-key-input"
             />
             <p className="font-mono text-[10px] text-neutral-600 mt-1.5 flex items-center gap-1">

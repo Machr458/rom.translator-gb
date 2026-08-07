@@ -167,7 +167,7 @@ export default function RomTranslator() {
         strings: session.strings,
         provider: aiSettings.provider,
         model: aiSettings.model || providers?.[aiSettings.provider]?.default,
-        api_key: aiSettings.provider === "emergent" ? "" : aiSettings.apiKey,
+        api_key: aiSettings.apiKey || "",
         batch_size: batchSize,
       });
       const jobId = r.data.job_id;

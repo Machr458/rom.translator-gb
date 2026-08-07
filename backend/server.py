@@ -72,8 +72,8 @@ PROVIDERS = {
         "default": "claude-sonnet-4-6",
     },
     "emergent": {
-        "label": "Emergent Universal Key (server default)",
-        "keyHint": "No key needed — uses server-side credits",
+        "label": "Emergent Universal Key",
+        "keyHint": "sk-emergent-... from Profile → Manage plan → Universal Key. Leave EMPTY to use the app's default key (free tier, limited).",
         "models": [
             {"id": "gemini-3-flash-preview", "label": "Gemini 3 Flash (via Emergent)", "pricing": {"input": 0.10, "output": 0.40}},
             {"id": "gemini-3.1-pro-preview", "label": "Gemini 3.1 Pro (via Emergent)", "pricing": {"input": 1.30, "output": 10.5}},
@@ -437,7 +437,10 @@ async def _call_llm(prompt: str, provider: str, model: Optional[str], api_key: O
 
     # --- Emergent Universal Key via emergentintegrations ---
     if provider == "emergent":
-        if not EMERGENT_LLM_KEY:
+        # Allow the user to bring their OWN emergent key (from Profile → Manage plan → Universal Key)
+        # to bypass the server-side pod-scoped key that has a $1 free-tier cap.
+        key = api_key or EMERGENT_LLM_KEY
+        if not key:
             raise HTTPException(status_code=400, detail="Emergent LLM key not configured")
         # Determine underlying provider from model id
         if model.startswith("gemini"):
@@ -449,7 +452,7 @@ async def _call_llm(prompt: str, provider: str, model: Optional[str], api_key: O
         else:
             e_provider = "gemini"
         chat = LlmChat(
-            api_key=EMERGENT_LLM_KEY,
+            api_key=key,
             session_id=f"trans-{uuid.uuid4()}",
             system_message="You are a precise game text translator that returns only JSON.",
         ).with_model(e_provider, model)
@@ -531,6 +534,8 @@ async def translate_rom_start(req: TranslateRequest):
     provider = (req.provider or "emergent").lower()
     if provider not in PROVIDERS:
         raise HTTPException(status_code=400, detail="Unknown provider")
+    # For non-emergent providers a user key is mandatory.
+    # For emergent, an optional user key overrides the server key (to bypass the pod-scoped free-tier cap).
     if provider != "emergent" and not req.api_key:
         raise HTTPException(status_code=400, detail=f"API key required for provider '{provider}'")
 
