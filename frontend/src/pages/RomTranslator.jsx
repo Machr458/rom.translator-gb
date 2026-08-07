@@ -13,6 +13,8 @@ import {
   Loader2,
   CheckCircle2,
   XCircle,
+  Settings2,
+  Sparkles,
 } from "lucide-react";
 import {
   Select,
@@ -23,6 +25,7 @@ import {
 } from "@/components/ui/select";
 import Terminal from "@/components/rom/Terminal";
 import TranslationTable from "@/components/rom/TranslationTable";
+import AiSettingsDialog, { loadSettings } from "@/components/rom/AiSettingsDialog";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -34,17 +37,21 @@ const MODES = [
 
 export default function RomTranslator() {
   const [languages, setLanguages] = useState([]);
+  const [providers, setProviders] = useState({});
+  const [aiSettings, setAiSettings] = useState(loadSettings());
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [targetLang, setTargetLang] = useState("cs");
   const [mode, setMode] = useState("view");
   const [file, setFile] = useState(null);
-  const [session, setSession] = useState(null); // {session_id, filename, rom_size, rom_type, strings}
-  const [translations, setTranslations] = useState([]); // [{id, original, translated}]
+  const [session, setSession] = useState(null);
+  const [translations, setTranslations] = useState([]);
   const [logs, setLogs] = useState([]);
-  const [status, setStatus] = useState("idle"); // idle|extracting|ready|translating|done|error
+  const [status, setStatus] = useState("idle");
   const [progress, setProgress] = useState(0);
   const [history, setHistory] = useState([]);
   const [dragActive, setDragActive] = useState(false);
   const fileInput = useRef(null);
+  const pollRef = useRef(null);
 
   const pushLog = useCallback((line, kind = "info") => {
     setLogs((l) => [...l, { line, kind, ts: Date.now() }]);
@@ -52,15 +59,26 @@ export default function RomTranslator() {
 
   useEffect(() => {
     axios.get(`${API}/languages`).then((r) => setLanguages(r.data)).catch(() => { /* ignore */ });
+    axios.get(`${API}/providers`).then((r) => setProviders(r.data)).catch(() => { /* ignore */ });
     loadHistory();
     pushLog("SYSTEM READY. Insert cartridge to begin.", "sys");
   }, [pushLog]);
+
+  useEffect(() => () => {
+    if (pollRef.current) clearInterval(pollRef.current);
+  }, []);
 
   const loadHistory = async () => {
     try {
       const r = await axios.get(`${API}/history`);
       setHistory(r.data);
-    } catch (_) {}
+    } catch (_) { /* ignore */ }
+  };
+
+  const providerLabel = () => {
+    const p = providers?.[aiSettings.provider];
+    const modelId = aiSettings.model || p?.default || "";
+    return `${(aiSettings.provider || "emergent").toUpperCase()} · ${modelId}`;
   };
 
   const handleFile = (f) => {
@@ -114,29 +132,57 @@ export default function RomTranslator() {
 
   const translate = async () => {
     if (!session) return;
+    if (aiSettings.provider !== "emergent" && !aiSettings.apiKey) {
+      toast.error("Zadej API klíč nebo přepni na Emergent Universal Key");
+      setSettingsOpen(true);
+      return;
+    }
     setStatus("translating");
-    setProgress(5);
+    setProgress(2);
     setTranslations(session.strings.map((s) => ({ id: s.id, original: s.text, translated: "" })));
-    pushLog(`> TRANSLATE :: target=${targetLang.toUpperCase()} model=gemini-3-flash`, "cmd");
-    pushLog(`  Sending ${session.strings.length} strings to AI...`, "info");
-
-    // Simulated progress while waiting
-    const tick = setInterval(() => setProgress((p) => Math.min(90, p + 3)), 800);
+    pushLog(`> TRANSLATE :: target=${targetLang.toUpperCase()} via ${providerLabel()}`, "cmd");
+    pushLog(`  Sending ${session.strings.length} strings...`, "info");
 
     try {
       const r = await axios.post(`${API}/rom/translate`, {
         session_id: session.session_id,
         target_language: targetLang,
         strings: session.strings,
+        provider: aiSettings.provider,
+        model: aiSettings.model || providers?.[aiSettings.provider]?.default,
+        api_key: aiSettings.provider === "emergent" ? "" : aiSettings.apiKey,
       });
-      clearInterval(tick);
-      setTranslations(r.data.translations);
-      setProgress(100);
-      setStatus("done");
-      pushLog(`  DONE. ${r.data.translations.length} strings translated.`, "ok");
-      toast.success("Překlad dokončen!");
+      const jobId = r.data.job_id;
+      pushLog(`  JOB ${jobId.slice(0, 8)}... running`, "info");
+      pollRef.current = setInterval(async () => {
+        try {
+          const s = await axios.get(`${API}/rom/translate/status/${jobId}`);
+          const data = s.data;
+          const pct = data.total ? Math.round((data.done / data.total) * 95) + 5 : 10;
+          setProgress(pct);
+          if (data.translations?.length) setTranslations(data.translations);
+          if (data.status === "done") {
+            clearInterval(pollRef.current);
+            pollRef.current = null;
+            setStatus("done");
+            setProgress(100);
+            pushLog(`  DONE. ${data.translations.length} strings translated.`, "ok");
+            toast.success("Překlad dokončen!");
+          } else if (data.status === "error") {
+            clearInterval(pollRef.current);
+            pollRef.current = null;
+            setStatus("error");
+            pushLog(`! ERROR: ${data.error}`, "err");
+            toast.error(data.error || "Translation failed");
+          }
+        } catch (err) {
+          clearInterval(pollRef.current);
+          pollRef.current = null;
+          setStatus("error");
+          pushLog(`! POLL FAILED: ${err.message}`, "err");
+        }
+      }, 1500);
     } catch (e) {
-      clearInterval(tick);
       setStatus("error");
       pushLog(`! TRANSLATION FAILED: ${e.response?.data?.detail || e.message}`, "err");
       toast.error(e.response?.data?.detail || "Translation failed");
@@ -187,9 +233,16 @@ export default function RomTranslator() {
               </p>
             </div>
           </div>
-          <div className="hidden sm:flex items-center gap-2 text-xs font-mono text-neutral-500">
-            <div className="w-2 h-2 bg-[#8BAC0F] rounded-full animate-pulse" />
-            <span>ONLINE · gemini-3-flash</span>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => setSettingsOpen(true)}
+              className="h-9 px-3 border border-neutral-700 hover:border-[#8BAC0F] rounded-sm font-mono text-[11px] uppercase tracking-wider text-neutral-300 hover:text-[#9BBC0F] transition-colors flex items-center gap-2"
+              data-testid="open-settings-btn"
+            >
+              <Settings2 className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">{providerLabel()}</span>
+              <span className="sm:hidden">AI</span>
+            </button>
           </div>
         </div>
       </header>
@@ -390,7 +443,7 @@ export default function RomTranslator() {
           )}
         </section>
 
-        {/* Config summary compact card */}
+        {/* Session stats */}
         <section className="lg:col-span-4 bg-neutral-900 border border-neutral-800 rounded-sm p-6" data-testid="stats-card">
           <h2 className="font-mono text-xs uppercase text-neutral-400 tracking-widest mb-4">04 · Session Stats</h2>
           <dl className="space-y-3 font-mono text-xs">
@@ -399,6 +452,7 @@ export default function RomTranslator() {
             <StatRow label="Strings" value={session?.strings?.length ?? "—"} highlight />
             <StatRow label="Target" value={targetLang.toUpperCase()} />
             <StatRow label="Mode" value={mode === "view" ? "VIEW" : "PATCH"} />
+            <StatRow label="AI" value={<span className="inline-flex items-center gap-1"><Sparkles className="w-3 h-3" />{(aiSettings.provider || "emergent").toUpperCase()}</span>} />
             <StatRow
               label="Translated"
               value={translations.filter((t) => t.translated).length + " / " + translations.length}
@@ -424,10 +478,18 @@ export default function RomTranslator() {
 
       <footer className="border-t border-neutral-800 mt-8 py-6 px-6">
         <div className="max-w-[1400px] mx-auto flex flex-col sm:flex-row items-center justify-between gap-2 font-mono text-[10px] text-neutral-600 uppercase tracking-widest">
-          <span>rom.translate · v0.1 · dmg-01 mode</span>
-          <span>powered by gemini 3 flash · your api key</span>
+          <span>rom.translate · v0.2 · dmg-01 mode</span>
+          <span>bring your own key · gemini · openai · claude</span>
         </div>
       </footer>
+
+      <AiSettingsDialog
+        open={settingsOpen}
+        onOpenChange={setSettingsOpen}
+        providers={providers}
+        settings={aiSettings}
+        onSave={setAiSettings}
+      />
     </div>
   );
 }

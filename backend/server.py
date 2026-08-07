@@ -28,11 +28,56 @@ db = client[os.environ['DB_NAME']]
 
 EMERGENT_LLM_KEY = os.environ.get('EMERGENT_LLM_KEY')
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
-# Primary: user's own Gemini key via google-genai SDK. Fallback: Emergent LLM via emergentintegrations.
-GEMINI_PRIMARY_MODEL = "gemini-3-flash-preview"
-GEMINI_FALLBACK_MODEL = "gemini-3-flash-preview"
 
-_genai_client = google_genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+# Provider catalog with recommended models
+PROVIDERS = {
+    "gemini": {
+        "label": "Google Gemini",
+        "keyHint": "AIza... (Google AI Studio) or your project key",
+        "models": [
+            {"id": "gemini-3.1-pro-preview", "label": "Gemini 3.1 Pro (best quality)"},
+            {"id": "gemini-3-flash-preview", "label": "Gemini 3 Flash (fast, cheap)"},
+            {"id": "gemini-2.5-pro", "label": "Gemini 2.5 Pro"},
+            {"id": "gemini-2.5-flash", "label": "Gemini 2.5 Flash"},
+        ],
+        "default": "gemini-3-flash-preview",
+    },
+    "openai": {
+        "label": "OpenAI",
+        "keyHint": "sk-... from platform.openai.com",
+        "models": [
+            {"id": "gpt-5.4", "label": "GPT-5.4 (recommended)"},
+            {"id": "gpt-5.4-mini", "label": "GPT-5.4 Mini (fast)"},
+            {"id": "gpt-5", "label": "GPT-5"},
+            {"id": "gpt-4o", "label": "GPT-4o"},
+        ],
+        "default": "gpt-5.4-mini",
+    },
+    "anthropic": {
+        "label": "Anthropic Claude",
+        "keyHint": "sk-ant-... from console.anthropic.com",
+        "models": [
+            {"id": "claude-sonnet-5", "label": "Claude Sonnet 5 (best)"},
+            {"id": "claude-sonnet-4-6", "label": "Claude Sonnet 4.6 (recommended)"},
+            {"id": "claude-haiku-4-5-20251001", "label": "Claude Haiku 4.5 (fast)"},
+        ],
+        "default": "claude-sonnet-4-6",
+    },
+    "emergent": {
+        "label": "Emergent Universal Key (server default)",
+        "keyHint": "No key needed — uses server-side credits",
+        "models": [
+            {"id": "gemini-3-flash-preview", "label": "Gemini 3 Flash (via Emergent)"},
+            {"id": "gemini-3.1-pro-preview", "label": "Gemini 3.1 Pro (via Emergent)"},
+            {"id": "gpt-5.4-mini", "label": "GPT-5.4 Mini (via Emergent)"},
+            {"id": "claude-sonnet-4-6", "label": "Claude Sonnet 4.6 (via Emergent)"},
+        ],
+        "default": "gemini-3-flash-preview",
+    },
+}
+
+# In-memory job registry for async translation
+JOBS: dict = {}
 
 app = FastAPI()
 api_router = APIRouter(prefix="/api")
@@ -55,6 +100,9 @@ class TranslateRequest(BaseModel):
     session_id: str
     target_language: str  # ISO code label e.g. "cs", "en"
     strings: List[ExtractedString]
+    provider: Optional[str] = "emergent"     # gemini | openai | anthropic | emergent
+    model: Optional[str] = None              # provider-specific model id (falls back to provider default)
+    api_key: Optional[str] = None            # user's own key (empty -> use server default when provider=emergent)
 
 class TranslatedString(BaseModel):
     id: str
@@ -95,7 +143,9 @@ LANGUAGE_NAMES = {
 }
 
 MIN_STRING_LEN = 4
-MAX_STRINGS = 300  # cap to keep translation cost reasonable
+MAX_STRINGS = 150  # cap to keep translation cost reasonable
+BATCH_SIZE = 15     # smaller batches -> faster individual Gemini calls
+MAX_PARALLEL = 8    # parallel batch calls
 PRINTABLE_RE = re.compile(rb"[\x20-\x7E]{%d,}" % MIN_STRING_LEN)
 
 
@@ -159,6 +209,11 @@ async def get_languages():
     return [{"code": k, "name": v} for k, v in LANGUAGE_NAMES.items()]
 
 
+@api_router.get("/providers")
+async def get_providers():
+    return PROVIDERS
+
+
 @api_router.post("/rom/extract", response_model=ExtractResponse)
 async def extract_rom(file: UploadFile = File(...)):
     fn = file.filename or "rom.gb"
@@ -216,49 +271,119 @@ def _build_translation_prompt(target_lang_name: str, strings: List[ExtractedStri
     )
 
 
-async def _call_gemini(prompt: str) -> str:
-    """Call Gemini using user's key primarily, then Emergent LLM as fallback."""
+async def _call_llm(prompt: str, provider: str, model: Optional[str], api_key: Optional[str]) -> str:
+    """Dispatch to the requested LLM provider with the user's key.
+    Provider 'emergent' uses the server-side EMERGENT_LLM_KEY via emergentintegrations.
+    """
     import asyncio
 
-    last_err = None
-    # Attempt 1-2: user's own key
-    if _genai_client is not None:
-        for attempt in range(2):
-            try:
-                resp = await asyncio.to_thread(
-                    _genai_client.models.generate_content,
-                    model=GEMINI_PRIMARY_MODEL,
-                    contents=prompt,
-                )
-                return resp.text or ""
-            except Exception as e:
-                last_err = e
-                logging.warning(f"User Gemini key attempt {attempt+1} failed: {str(e)[:200]}")
-                await asyncio.sleep(1.2 * (attempt + 1))
+    provider = (provider or "emergent").lower()
+    if provider not in PROVIDERS:
+        raise HTTPException(status_code=400, detail=f"Unknown provider '{provider}'")
 
-    # Fallback: Emergent LLM key
-    if EMERGENT_LLM_KEY:
+    model = model or PROVIDERS[provider]["default"]
+
+    # --- Google Gemini via google-genai SDK ---
+    if provider == "gemini":
+        key = api_key or GEMINI_API_KEY
+        if not key:
+            raise HTTPException(status_code=400, detail="Gemini API key missing")
+        client_ = google_genai.Client(api_key=key)
         try:
-            chat = LlmChat(
-                api_key=EMERGENT_LLM_KEY,
-                session_id=f"trans-{uuid.uuid4()}",
-                system_message="You are a precise game text translator that returns only JSON.",
-            ).with_model("gemini", GEMINI_FALLBACK_MODEL)
-            resp = await chat.send_message(UserMessage(text=prompt))
+            resp = await asyncio.wait_for(
+                asyncio.to_thread(client_.models.generate_content, model=model, contents=prompt),
+                timeout=60,
+            )
+            return resp.text or ""
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"Gemini error: {str(e)[:300]}")
+
+    # --- OpenAI via official SDK ---
+    if provider == "openai":
+        key = api_key
+        if not key:
+            raise HTTPException(status_code=400, detail="OpenAI API key missing")
+        from openai import AsyncOpenAI
+        client_ = AsyncOpenAI(api_key=key)
+        try:
+            resp = await asyncio.wait_for(
+                client_.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": "You are a precise game text translator that returns only JSON."},
+                        {"role": "user", "content": prompt},
+                    ],
+                ),
+                timeout=60,
+            )
+            return resp.choices[0].message.content or ""
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"OpenAI error: {str(e)[:300]}")
+
+    # --- Anthropic Claude via official SDK ---
+    if provider == "anthropic":
+        key = api_key
+        if not key:
+            raise HTTPException(status_code=400, detail="Anthropic API key missing")
+        from anthropic import AsyncAnthropic
+        client_ = AsyncAnthropic(api_key=key)
+        try:
+            msg = await asyncio.wait_for(
+                client_.messages.create(
+                    model=model,
+                    max_tokens=4096,
+                    system="You are a precise game text translator that returns only JSON.",
+                    messages=[{"role": "user", "content": prompt}],
+                ),
+                timeout=60,
+            )
+            # concatenate text blocks
+            return "".join(getattr(b, "text", "") for b in msg.content) or ""
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"Anthropic error: {str(e)[:300]}")
+
+    # --- Emergent Universal Key via emergentintegrations ---
+    if provider == "emergent":
+        if not EMERGENT_LLM_KEY:
+            raise HTTPException(status_code=400, detail="Emergent LLM key not configured")
+        # Determine underlying provider from model id
+        if model.startswith("gemini"):
+            e_provider = "gemini"
+        elif model.startswith("gpt") or model.startswith("o"):
+            e_provider = "openai"
+        elif model.startswith("claude"):
+            e_provider = "anthropic"
+        else:
+            e_provider = "gemini"
+        chat = LlmChat(
+            api_key=EMERGENT_LLM_KEY,
+            session_id=f"trans-{uuid.uuid4()}",
+            system_message="You are a precise game text translator that returns only JSON.",
+        ).with_model(e_provider, model)
+        try:
+            resp = await asyncio.wait_for(
+                chat.send_message(UserMessage(text=prompt)),
+                timeout=60,
+            )
             return resp if isinstance(resp, str) else str(resp)
         except Exception as e:
-            last_err = e
-            logging.warning(f"Emergent fallback failed: {str(e)[:200]}")
+            raise HTTPException(status_code=502, detail=f"Emergent error: {str(e)[:300]}")
 
-    raise HTTPException(status_code=502, detail=f"Gemini upstream error: {last_err}")
+    raise HTTPException(status_code=400, detail=f"Provider '{provider}' not implemented")
 
 
-async def _translate_batch(target_lang_name: str, batch: List[ExtractedString]) -> List[TranslatedString]:
+async def _translate_batch(
+    target_lang_name: str,
+    batch: List[ExtractedString],
+    provider: str,
+    model: Optional[str],
+    api_key: Optional[str],
+) -> List[TranslatedString]:
     if not batch:
         return []
 
     prompt = _build_translation_prompt(target_lang_name, batch)
-    text = (await _call_gemini(prompt)).strip()
+    text = (await _call_llm(prompt, provider, model, api_key)).strip()
 
     # Strip code fences if present
     if text.startswith("```"):
@@ -281,32 +406,80 @@ async def _translate_batch(target_lang_name: str, batch: List[ExtractedString]) 
     return results
 
 
-@api_router.post("/rom/translate", response_model=TranslateResponse)
-async def translate_rom(req: TranslateRequest):
-    if not EMERGENT_LLM_KEY:
-        raise HTTPException(status_code=500, detail="LLM key not configured")
+@api_router.post("/rom/translate")
+async def translate_rom_start(req: TranslateRequest):
+    """Start an async translation job. Returns job_id immediately.
+    Client polls GET /api/rom/translate/status/{job_id}.
+    """
     lang_name = LANGUAGE_NAMES.get(req.target_language)
     if not lang_name:
         raise HTTPException(status_code=400, detail="Unsupported language")
 
-    # Batch to keep prompts small; ~40 strings per call
-    BATCH = 40
-    all_out: List[TranslatedString] = []
-    for i in range(0, len(req.strings), BATCH):
-        batch = req.strings[i:i + BATCH]
-        out = await _translate_batch(lang_name, batch)
-        all_out.extend(out)
+    provider = (req.provider or "emergent").lower()
+    if provider not in PROVIDERS:
+        raise HTTPException(status_code=400, detail="Unknown provider")
+    if provider != "emergent" and not req.api_key:
+        raise HTTPException(status_code=400, detail=f"API key required for provider '{provider}'")
 
-    await db.rom_sessions.update_one(
-        {"session_id": req.session_id},
-        {"$set": {"target_language": req.target_language, "translated_at": datetime.now(timezone.utc).isoformat()}}
-    )
+    import asyncio
 
-    return TranslateResponse(
-        session_id=req.session_id,
-        target_language=req.target_language,
-        translations=all_out,
-    )
+    job_id = str(uuid.uuid4())
+    JOBS[job_id] = {
+        "status": "running",
+        "total": len(req.strings),
+        "done": 0,
+        "translations": [],
+        "error": None,
+        "session_id": req.session_id,
+        "target_language": req.target_language,
+        "provider": provider,
+        "model": req.model or PROVIDERS[provider]["default"],
+    }
+
+    async def worker():
+        batches = [req.strings[i:i + BATCH_SIZE] for i in range(0, len(req.strings), BATCH_SIZE)]
+        sem = asyncio.Semaphore(MAX_PARALLEL)
+
+        async def run(batch):
+            async with sem:
+                try:
+                    out = await _translate_batch(lang_name, batch, provider, req.model, req.api_key)
+                except Exception as e:
+                    logging.warning(f"Batch failed, keeping originals: {e}")
+                    out = [TranslatedString(id=s.id, original=s.text, translated=s.text) for s in batch]
+                JOBS[job_id]["done"] += len(batch)
+                JOBS[job_id]["translations"].extend([t.model_dump() for t in out])
+                return out
+
+        try:
+            await asyncio.gather(*[run(b) for b in batches])
+            JOBS[job_id]["status"] = "done"
+            await db.rom_sessions.update_one(
+                {"session_id": req.session_id},
+                {"$set": {"target_language": req.target_language,
+                          "translated_at": datetime.now(timezone.utc).isoformat()}}
+            )
+        except Exception as e:
+            JOBS[job_id]["status"] = "error"
+            JOBS[job_id]["error"] = str(e)
+
+    asyncio.create_task(worker())
+    return {"job_id": job_id, "total": len(req.strings)}
+
+
+@api_router.get("/rom/translate/status/{job_id}")
+async def translate_rom_status(job_id: str):
+    job = JOBS.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return {
+        "job_id": job_id,
+        "status": job["status"],
+        "total": job["total"],
+        "done": job["done"],
+        "translations": job["translations"],
+        "error": job["error"],
+    }
 
 
 @api_router.post("/rom/patch")
