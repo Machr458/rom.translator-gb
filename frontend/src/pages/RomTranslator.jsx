@@ -186,12 +186,14 @@ export default function RomTranslator() {
             setProgress(100);
             const ok = data.translated_count || 0;
             const fail = data.failed_count || 0;
-            pushLog(`  DONE. ${ok} translated, ${fail} failed (kept as original).`, fail ? "info" : "ok");
+            const cached = data.cached_count || 0;
+            const fromCache = cached > 0 ? ` (${cached} from cache · free)` : "";
+            pushLog(`  DONE. ${ok} translated${fromCache}, ${fail} failed (kept as original).`, fail ? "info" : "ok");
             if (fail) {
               data.errors?.forEach((er) => pushLog(`  ! ${er}`, "err"));
-              toast.warning(`${ok}/${data.total} přeloženo — ${fail} selhalo. Zkus přepnout na Emergent nebo jiný AI provider.`);
+              toast.warning(`${ok}/${data.total} přeloženo — ${fail} selhalo.`);
             } else {
-              toast.success("Překlad dokončen!");
+              toast.success(cached > 0 ? `Překlad hotov! (${cached} z cache, ${ok - cached} nových)` : "Překlad dokončen!");
             }
           } else if (data.status === "error") {
             clearInterval(pollRef.current);

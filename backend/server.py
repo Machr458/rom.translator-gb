@@ -85,8 +85,56 @@ PROVIDERS = {
     },
 }
 
+import hashlib
+
 # In-memory job registry for async translation
 JOBS: dict = {}
+
+
+def _cache_key(text: str, target_lang: str) -> str:
+    """Deterministic cache key: hash of (text, target lang). Provider/model intentionally
+    excluded so a translation done once is reused for the same language regardless of AI."""
+    h = hashlib.sha256(f"{target_lang}\x1f{text}".encode("utf-8")).hexdigest()
+    return h[:32]
+
+
+async def _cache_lookup(texts_by_lang: dict) -> dict:
+    """Look up cached translations. texts_by_lang: {lang: set(texts)}.
+    Returns {(lang, text): translated} for hits."""
+    hits = {}
+    all_keys = []
+    key_meta = {}
+    for lang, texts in texts_by_lang.items():
+        for t in texts:
+            k = _cache_key(t, lang)
+            all_keys.append(k)
+            key_meta[k] = (lang, t)
+    if not all_keys:
+        return hits
+    async for doc in db.translation_cache.find({"key": {"$in": all_keys}}, {"_id": 0, "key": 1, "translated": 1}):
+        meta = key_meta.get(doc["key"])
+        if meta:
+            hits[meta] = doc["translated"]
+    return hits
+
+
+async def _cache_store_many(items: list):
+    """items: list of {key, source, translated, target_lang}. Bulk upsert."""
+    if not items:
+        return
+    from pymongo import UpdateOne
+    ops = []
+    now = datetime.now(timezone.utc).isoformat()
+    for it in items:
+        ops.append(UpdateOne(
+            {"key": it["key"]},
+            {"$set": {**it, "updated_at": now}, "$setOnInsert": {"created_at": now}},
+            upsert=True,
+        ))
+    try:
+        await db.translation_cache.bulk_write(ops, ordered=False)
+    except Exception as e:
+        logging.warning(f"Cache bulk_write failed: {e}")
 
 
 def _error_code(err: str) -> str:
@@ -669,6 +717,7 @@ async def translate_rom_start(req: TranslateRequest):
         "done": 0,
         "translated_count": 0,
         "failed_count": 0,
+        "cached_count": 0,
         "translations": [],
         "error": None,
         "errors": [],
@@ -679,10 +728,27 @@ async def translate_rom_start(req: TranslateRequest):
     }
 
     async def worker():
+        # === CACHE LOOKUP: skip strings we've already translated ===
+        cache_hits = await _cache_lookup({req.target_language: {s.text for s in req.strings}})
+        cached_out = []
+        remaining = []
+        for s in req.strings:
+            key = (req.target_language, s.text)
+            if key in cache_hits:
+                cached_out.append(TranslatedString(id=s.id, original=s.text, translated=cache_hits[key]))
+            else:
+                remaining.append(s)
+        if cached_out:
+            JOBS[job_id]["cached_count"] = len(cached_out)
+            JOBS[job_id]["translated_count"] += len(cached_out)
+            JOBS[job_id]["done"] += len(cached_out)
+            JOBS[job_id]["translations"].extend([t.model_dump() for t in cached_out])
+            logging.info(f"Cache hits: {len(cached_out)}/{len(req.strings)}")
+
         # Clamp user-requested batch_size into [10 .. MAX_BATCH_SIZE]
         bs = req.batch_size or DEFAULT_BATCH_SIZE
         bs = min(max(bs, 10), MAX_BATCH_SIZE)
-        batches = [req.strings[i:i + bs] for i in range(0, len(req.strings), bs)]
+        batches = [remaining[i:i + bs] for i in range(0, len(remaining), bs)]
         sem = asyncio.Semaphore(MAX_PARALLEL)
         abort_flag = {"stop": False, "reason": None}
 
@@ -703,13 +769,25 @@ async def translate_rom_start(req: TranslateRequest):
                     out = await _translate_batch(lang_name, batch, provider, req.model, req.api_key)
                     real_translated = sum(1 for t, s in zip(out, batch) if t.translated != s.text)
                     JOBS[job_id]["translated_count"] += real_translated
+                    # === CACHE STORE: persist successful translations ===
+                    to_store = [
+                        {
+                            "key": _cache_key(s.text, req.target_language),
+                            "source": s.text,
+                            "translated": t.translated,
+                            "target_lang": req.target_language,
+                        }
+                        for t, s in zip(out, batch)
+                        if t.translated and t.translated != s.text
+                    ]
+                    if to_store:
+                        await _cache_store_many(to_store)
                 except Exception as e:
                     failed = True
                     err_msg = str(getattr(e, "detail", None) or e)[:250]
                     logging.warning(f"Batch failed: {err_msg}")
                     out = [TranslatedString(id=s.id, original=s.text, translated=s.text) for s in batch]
                     JOBS[job_id]["failed_count"] += len(batch)
-                    # Detect fatal errors that will keep failing every batch -> abort
                     low = err_msg.lower()
                     if ("emergent_budget_exceeded" in low
                         or "budget has been exceeded" in low
@@ -760,12 +838,29 @@ async def translate_rom_status(job_id: str):
         "total": job["total"],
         "done": job["done"],
         "translated_count": job.get("translated_count", 0),
+        "cached_count": job.get("cached_count", 0),
         "failed_count": job.get("failed_count", 0),
         "translations": job["translations"],
         "error": job["error"],
         "error_code": job.get("error_code"),
         "errors": job.get("errors", []),
     }
+
+
+@api_router.get("/cache/stats")
+async def cache_stats():
+    total = await db.translation_cache.count_documents({})
+    # per-language counts
+    pipeline = [{"$group": {"_id": "$target_lang", "count": {"$sum": 1}}}, {"$sort": {"count": -1}}]
+    per_lang = [{"lang": d["_id"], "count": d["count"]} async for d in db.translation_cache.aggregate(pipeline)]
+    return {"total": total, "per_language": per_lang}
+
+
+@api_router.post("/cache/clear")
+async def cache_clear(target_language: Optional[str] = None):
+    q = {"target_lang": target_language} if target_language else {}
+    r = await db.translation_cache.delete_many(q)
+    return {"deleted": r.deleted_count}
 
 
 @api_router.post("/rom/patch")
