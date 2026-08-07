@@ -195,9 +195,28 @@ export default function RomTranslator() {
             clearInterval(pollRef.current);
             pollRef.current = null;
             setStatus("error");
-            pushLog(`! ERROR: ${data.error}`, "err");
-            data.errors?.forEach((er) => pushLog(`  · ${er}`, "err"));
-            toast.error(data.error || "Translation failed");
+            const code = data.error_code || "";
+            const friendly = data.error || "Translation failed";
+            pushLog(`! ERROR: ${friendly}`, "err");
+            if (code === "EMERGENT_BUDGET_EXCEEDED") {
+              toast.error("Emergent kredit vyčerpán — přepni na vlastní AI klíč v Nastavení", {
+                duration: 8000,
+                action: {
+                  label: "Otevřít nastavení",
+                  onClick: () => setSettingsOpen(true),
+                },
+              });
+            } else if (code === "QUOTA_EXCEEDED" || code === "INVALID_KEY") {
+              toast.error(friendly, {
+                duration: 8000,
+                action: {
+                  label: "Otevřít nastavení",
+                  onClick: () => setSettingsOpen(true),
+                },
+              });
+            } else {
+              toast.error(friendly);
+            }
           }
         } catch (err) {
           clearInterval(pollRef.current);

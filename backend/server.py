@@ -87,6 +87,36 @@ PROVIDERS = {
 # In-memory job registry for async translation
 JOBS: dict = {}
 
+
+def _error_code(err: str) -> str:
+    low = (err or "").lower()
+    if "emergent_budget_exceeded" in low or "budget has been exceeded" in low:
+        return "EMERGENT_BUDGET_EXCEEDED"
+    if "resource_exhausted" in low or "429" in low or "quota" in low or "rate" in low:
+        return "QUOTA_EXCEEDED"
+    if "invalid api key" in low or "unauthorized" in low or "api key missing" in low:
+        return "INVALID_KEY"
+    if "timeout" in low:
+        return "TIMEOUT"
+    return "UPSTREAM_ERROR"
+
+
+def _friendly_error(err: str) -> str:
+    code = _error_code(err)
+    if code == "EMERGENT_BUDGET_EXCEEDED":
+        return ("Emergent Universal Key credit is exhausted. "
+                "Add balance in Profile → Manage plan → Universal Key, "
+                "or open Settings and switch to your own AI provider (Gemini / OpenAI / Anthropic).")
+    if code == "QUOTA_EXCEEDED":
+        return ("The selected provider's free-tier quota is used up for today. "
+                "Open Settings and try a different provider or wait until the quota resets.")
+    if code == "INVALID_KEY":
+        return ("The API key was rejected. Open Settings and re-enter a valid key, "
+                "or switch to the Emergent Universal Key.")
+    if code == "TIMEOUT":
+        return "The AI provider timed out. Try again, or switch to a faster model in Settings."
+    return f"Translation failed: {err[:200]}"
+
 app = FastAPI()
 api_router = APIRouter(prefix="/api")
 
@@ -428,7 +458,15 @@ async def _call_llm(prompt: str, provider: str, model: Optional[str], api_key: O
             )
             return resp if isinstance(resp, str) else str(resp)
         except Exception as e:
-            raise HTTPException(status_code=502, detail=f"Emergent error: {str(e)[:300]}")
+            msg = str(e)
+            # Detect the Emergent free-tier budget cap and surface a friendly message
+            low = msg.lower()
+            if "budget has been exceeded" in low or "max budget" in low:
+                raise HTTPException(
+                    status_code=402,
+                    detail="EMERGENT_BUDGET_EXCEEDED: Emergent Universal Key credit was used up. Add balance in Profile → Manage plan → Universal Key, or switch to your own API key (Gemini / OpenAI / Anthropic) in Settings.",
+                )
+            raise HTTPException(status_code=502, detail=f"Emergent error: {msg[:300]}")
 
     raise HTTPException(status_code=400, detail=f"Provider '{provider}' not implemented")
 
@@ -515,14 +553,23 @@ async def translate_rom_start(req: TranslateRequest):
     async def worker():
         batches = [req.strings[i:i + BATCH_SIZE] for i in range(0, len(req.strings), BATCH_SIZE)]
         sem = asyncio.Semaphore(MAX_PARALLEL)
+        abort_flag = {"stop": False, "reason": None}
 
         async def run(batch):
             async with sem:
+                # Fail fast: if a prior batch hit a fatal error like budget exhaustion,
+                # skip remaining batches instead of wasting time / retries.
+                if abort_flag["stop"]:
+                    out = [TranslatedString(id=s.id, original=s.text, translated=s.text) for s in batch]
+                    JOBS[job_id]["failed_count"] += len(batch)
+                    JOBS[job_id]["done"] += len(batch)
+                    JOBS[job_id]["translations"].extend([t.model_dump() for t in out])
+                    return out
+
                 failed = False
                 err_msg = None
                 try:
                     out = await _translate_batch(lang_name, batch, provider, req.model, req.api_key)
-                    # Consider "translated" only if any output differs from input
                     real_translated = sum(1 for t, s in zip(out, batch) if t.translated != s.text)
                     JOBS[job_id]["translated_count"] += real_translated
                 except Exception as e:
@@ -531,6 +578,15 @@ async def translate_rom_start(req: TranslateRequest):
                     logging.warning(f"Batch failed: {err_msg}")
                     out = [TranslatedString(id=s.id, original=s.text, translated=s.text) for s in batch]
                     JOBS[job_id]["failed_count"] += len(batch)
+                    # Detect fatal errors that will keep failing every batch -> abort
+                    low = err_msg.lower()
+                    if ("emergent_budget_exceeded" in low
+                        or "budget has been exceeded" in low
+                        or "invalid api key" in low
+                        or "unauthorized" in low
+                        or "api key missing" in low):
+                        abort_flag["stop"] = True
+                        abort_flag["reason"] = err_msg
                 JOBS[job_id]["done"] += len(batch)
                 JOBS[job_id]["translations"].extend([t.model_dump() for t in out])
                 if failed and err_msg and err_msg not in JOBS[job_id]["errors"]:
@@ -539,12 +595,16 @@ async def translate_rom_start(req: TranslateRequest):
 
         try:
             await asyncio.gather(*[run(b) for b in batches])
-            # If nothing actually translated, mark as error
             if JOBS[job_id]["translated_count"] == 0 and JOBS[job_id]["failed_count"] > 0:
                 JOBS[job_id]["status"] = "error"
-                JOBS[job_id]["error"] = "All batches failed. First error: " + (JOBS[job_id]["errors"][0] if JOBS[job_id]["errors"] else "unknown")
+                # Prefer the fatal reason if we aborted
+                first_err = abort_flag.get("reason") or (JOBS[job_id]["errors"][0] if JOBS[job_id]["errors"] else "unknown")
+                JOBS[job_id]["error"] = _friendly_error(first_err)
+                JOBS[job_id]["error_code"] = _error_code(first_err)
             else:
                 JOBS[job_id]["status"] = "done"
+                if abort_flag["stop"]:
+                    JOBS[job_id]["error_code"] = _error_code(abort_flag.get("reason") or "")
             await db.rom_sessions.update_one(
                 {"session_id": req.session_id},
                 {"$set": {"target_language": req.target_language,
@@ -572,6 +632,7 @@ async def translate_rom_status(job_id: str):
         "failed_count": job.get("failed_count", 0),
         "translations": job["translations"],
         "error": job["error"],
+        "error_code": job.get("error_code"),
         "errors": job.get("errors", []),
     }
 

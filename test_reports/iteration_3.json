@@ -1,0 +1,40 @@
+{
+  "summary": "Verified the Emergent-budget-exhausted UX fix end-to-end. Backend now maps 'Budget has been exceeded' to error_code='EMERGENT_BUDGET_EXCEEDED' and returns a clean friendly message via GET /api/rom/translate/status/{job_id}. Worker short-circuits remaining batches once a fatal budget/invalid-key error hits (a 6-batch/2-job pytest run against the real budget-exhausted key finished in ~2.2s). Frontend shows a Sonner toast with the Czech message and an 'Otevřít nastavení' action button that opens the ai-settings-dialog; terminal-log shows friendly '! ERROR:' line with zero raw litellm technical noise.",
+  "tested_scope": ["backend", "frontend", "integration"],
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "passed": [
+    "Unit: _error_code maps 'Budget has been exceeded' / 'EMERGENT_BUDGET_EXCEEDED:' -> EMERGENT_BUDGET_EXCEEDED",
+    "Unit: _error_code maps '429 RESOURCE_EXHAUSTED'/'rate'/'quota' -> QUOTA_EXCEEDED",
+    "Unit: _error_code maps 'Invalid API key'/'Unauthorized' -> INVALID_KEY",
+    "Unit: _error_code maps 'timeout' -> TIMEOUT; default -> UPSTREAM_ERROR",
+    "Unit: _friendly_error(budget) mentions Profile/Manage plan/Universal Key/Settings; contains no litellm/openaiexception noise",
+    "Unit: _friendly_error for QUOTA_EXCEEDED / INVALID_KEY / TIMEOUT contains actionable next step",
+    "E2E: POST /api/rom/translate provider=emergent with 60 strings (3 batches) -> status=error with error_code='EMERGENT_BUDGET_EXCEEDED', clean friendly text, elapsed well under 45s",
+    "E2E fail-fast: 80-string / 4-batch job also ends with EMERGENT_BUDGET_EXCEEDED and dedup keeps errors[] <=2 unique entries; overall pytest module for 2 E2E jobs completed in 2.24s",
+    "Regression: status endpoint always returns error_code/error/errors keys even mid-run",
+    "UI: uploading small.gb + extract + translate against real budget-exhausted key => terminal shows 'ERROR: Emergent Universal Key credit is exhausted. Add balance in Profile → Manage plan → Universal Key, or open Settings and switch to your own AI provider (Gemini / OpenAI / Anthropic).'",
+    "UI: terminal-log contains NO 'litellm', 'OpenAIException' or 'BadRequestError' text",
+    "UI: Sonner toast visible with 'Emergent kredit vyčerpán — přepni na vlastní AI klíč v Nastavení' and 'Otevřít nastavení' action button",
+    "UI: clicking 'Otevřít nastavení' opens data-testid='ai-settings-dialog' (visible=true)"
+  ],
+  "test_report_links": [
+    "/app/backend/tests/test_budget_error.py",
+    "/app/test_reports/pytest/budget_results.xml",
+    "/app/test_reports/budget_error_ui.png"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py _error_code currently checks only 'budget has been exceeded' and 'emergent_budget_exceeded' substrings — the paired _call_llm also matches 'max budget', so the phrase 'Max budget: 1.0 reached' alone (without being wrapped by _call_llm) would fall through to UPSTREAM_ERROR. Not a real bug today (all emergent budget errors get wrapped) but adding 'max budget' to _error_code would make the helper self-consistent with _call_llm.",
+    "Worker uses in-memory JOBS dict — restart of backend loses jobs; not a regression but worth noting for the roadmap.",
+    "Batch fallback (_translate_batch) only falls back to Emergent for non-emergent providers on 502/quota — for provider='emergent' with budget exhausted there is intentionally no fallback (correct behavior)."
+  ],
+  "updated_files": ["/app/backend/tests/test_budget_error.py"],
+  "success_rate": {"backend": "100% (12/12 pytest tests)", "frontend": "100% (all UX criteria met)"},
+  "test_credentials": "N/A (uses server-side EMERGENT_LLM_KEY which is intentionally budget-exhausted in this container)",
+  "seed_data_creation": "Reused existing /tmp/small.gb (4KB) and /tmp/big.gba (2MB Pokemon Gen3) from iteration 2.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "The Emergent Universal Key in this container is over budget by design so any provider=emergent translate reliably reproduces EMERGENT_BUDGET_EXCEEDED. Backend pytest suite: pytest /app/backend/tests/ -v. Playwright flow: upload /tmp/small.gb -> extract -> translate (default provider=emergent) -> assert terminal + toast + action button + dialog open.",
+  "rca of the issue": "Original UX bug: end-user saw a giant repeated litellm.BadRequestError block including 'Emergent error: Failed to generate chat completion...Budget has been exceeded! Current cost: 1.522912'. Two root causes: (1) _call_llm surfaced raw exception text; (2) worker did not abort and every batch produced its own copy of the noise. Fix (verified): _call_llm re-raises HTTPException(402, 'EMERGENT_BUDGET_EXCEEDED: ...'); worker sets abort_flag on first fatal batch and short-circuits remaining ones; status endpoint exposes structured error_code; frontend switches on error_code to show localized toast with 'Otevřít nastavení' action opening ai-settings-dialog. Terminal now shows exactly one friendly '! ERROR:' line."
+}
