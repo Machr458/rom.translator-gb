@@ -280,8 +280,10 @@ async def extract_rom(
     rom_path(session_id).write_bytes(data)
 
     strings = extract_strings_from_bytes(data, encoding=enc, max_strings=max_strings)
-    # Count total available (may be >>max_strings) to tell user the truth
-    if enc == "pokemon_gen3":
+    # If user asked for unlimited (max_strings<=0), we already have every string; skip the second pass
+    if max_strings <= 0:
+        found_total = len(strings)
+    elif enc == "pokemon_gen3":
         found_total = count_pokemon_gen3_runs(data, min_length=5)
     else:
         found_total = len(extract_ascii_from_bytes(data, HARD_MAX_STRINGS))

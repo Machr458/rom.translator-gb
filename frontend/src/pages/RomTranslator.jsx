@@ -117,6 +117,9 @@ export default function RomTranslator() {
       fd.append("max_strings", String(maxStrings));
       const r = await axios.post(`${API}/rom/extract`, fd, {
         headers: { "Content-Type": "multipart/form-data" },
+        timeout: 180000, // 3 min upper bound for very large ROMs
+        maxContentLength: Infinity,
+        maxBodyLength: Infinity,
         onUploadProgress: (e) => {
           if (e.total) setProgress(Math.round((e.loaded / e.total) * 60));
         },
@@ -136,8 +139,10 @@ export default function RomTranslator() {
       loadHistory();
     } catch (e) {
       setStatus("error");
-      pushLog(`! ERROR: ${e.response?.data?.detail || e.message}`, "err");
-      toast.error(e.response?.data?.detail || "Extraction failed");
+      const detail = e.response?.data?.detail || e.message || "Unknown error";
+      pushLog(`! ERROR: ${detail}`, "err");
+      pushLog(`  Try lowering "Max Strings" or switching encoding.`, "err");
+      toast.error(`Extraction failed: ${detail}`);
     }
   };
 
