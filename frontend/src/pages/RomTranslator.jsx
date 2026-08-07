@@ -41,6 +41,7 @@ export default function RomTranslator() {
   const [encodings, setEncodings] = useState([]);
   const [encoding, setEncoding] = useState("auto");
   const [maxStrings, setMaxStrings] = useState(500);
+  const [batchSize, setBatchSize] = useState(60);
   const [aiSettings, setAiSettings] = useState(loadSettings());
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [targetLang, setTargetLang] = useState("cs");
@@ -157,7 +158,7 @@ export default function RomTranslator() {
     setProgress(2);
     setTranslations(session.strings.map((s) => ({ id: s.id, original: s.text, translated: "" })));
     pushLog(`> TRANSLATE :: target=${targetLang.toUpperCase()} via ${providerLabel()}`, "cmd");
-    pushLog(`  Sending ${session.strings.length} strings...`, "info");
+    pushLog(`  Sending ${session.strings.length} strings in ${Math.ceil(session.strings.length / batchSize)} batch(es) of ${batchSize}...`, "info");
 
     try {
       const r = await axios.post(`${API}/rom/translate`, {
@@ -167,6 +168,7 @@ export default function RomTranslator() {
         provider: aiSettings.provider,
         model: aiSettings.model || providers?.[aiSettings.provider]?.default,
         api_key: aiSettings.provider === "emergent" ? "" : aiSettings.apiKey,
+        batch_size: batchSize,
       });
       const jobId = r.data.job_id;
       pushLog(`  JOB ${jobId.slice(0, 8)}... running`, "info");
@@ -413,6 +415,25 @@ export default function RomTranslator() {
                       {n === 0 ? "(⚠ can be huge · high LLM cost)" : "(slow · high LLM cost)"}
                     </span>
                   )}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+
+          <label className="font-mono text-[10px] uppercase text-neutral-500 tracking-wider mt-5 mb-2 block">
+            Batch Size <span className="text-neutral-600 normal-case tracking-normal">— strings per AI call</span>
+          </label>
+          <Select value={String(batchSize)} onValueChange={(v) => setBatchSize(Number(v))}>
+            <SelectTrigger
+              className="h-11 bg-neutral-950 border-neutral-700 rounded-sm font-mono text-sm"
+              data-testid="batch-size-select"
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent className="bg-neutral-900 border-neutral-800 rounded-sm">
+              {[20, 60, 120, 200, 300].map((n) => (
+                <SelectItem key={n} value={String(n)} className="font-mono text-sm" data-testid={`batch-size-option-${n}`}>
+                  {n} strings / call {n === 60 ? " · default" : ""}{n >= 200 ? <span className="text-[#C7305C] ml-2">(risk of output truncation)</span> : ""}
                 </SelectItem>
               ))}
             </SelectContent>

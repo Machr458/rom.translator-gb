@@ -143,6 +143,7 @@ class TranslateRequest(BaseModel):
     provider: Optional[str] = "emergent"     # gemini | openai | anthropic | emergent
     model: Optional[str] = None              # provider-specific model id (falls back to provider default)
     api_key: Optional[str] = None            # user's own key (empty -> use server default when provider=emergent)
+    batch_size: Optional[int] = None         # strings per single LLM call (defaults to DEFAULT_BATCH_SIZE)
 
 class TranslatedString(BaseModel):
     id: str
@@ -186,7 +187,8 @@ MIN_STRING_LEN = 4
 DEFAULT_MAX_STRINGS = 500     # sensible default per extract
 HARD_MAX_STRINGS = 100000     # hard cap regardless of user choice (protects RAM)
 UNLIMITED_SENTINEL = 0        # 0 or negative == "no user cap; use HARD_MAX_STRINGS"
-BATCH_SIZE = 20               # bigger batches -> fewer Gemini calls at scale
+DEFAULT_BATCH_SIZE = 60       # strings per single LLM call (bigger = fewer calls / cheaper / faster)
+MAX_BATCH_SIZE = 300          # upper limit to protect against output token truncation
 MAX_PARALLEL = 8              # parallel batch calls
 PRINTABLE_RE = re.compile(rb"[\x20-\x7E]{%d,}" % MIN_STRING_LEN)
 
@@ -551,7 +553,10 @@ async def translate_rom_start(req: TranslateRequest):
     }
 
     async def worker():
-        batches = [req.strings[i:i + BATCH_SIZE] for i in range(0, len(req.strings), BATCH_SIZE)]
+        # Clamp user-requested batch_size into [10 .. MAX_BATCH_SIZE]
+        bs = req.batch_size or DEFAULT_BATCH_SIZE
+        bs = min(max(bs, 10), MAX_BATCH_SIZE)
+        batches = [req.strings[i:i + bs] for i in range(0, len(req.strings), bs)]
         sem = asyncio.Semaphore(MAX_PARALLEL)
         abort_flag = {"stop": False, "reason": None}
 
