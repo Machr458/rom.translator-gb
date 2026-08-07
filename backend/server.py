@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 
 from emergentintegrations.llm.chat import LlmChat, UserMessage
 from google import genai as google_genai
+from json_repair import repair_json as _repair_json
 
 from charmaps import (
     extract_pokemon_gen3_runs,
@@ -408,13 +409,16 @@ def _build_translation_prompt(target_lang_name: str, strings: List[ExtractedStri
         f"into {target_lang_name}.\n\n"
         f"IMPORTANT RULES:\n"
         f"1. Keep translations concise. Try to match the ORIGINAL LENGTH in characters — game text often has fixed buffers. "
-        f"If the translation would be longer, abbreviate naturally to fit within the original length ({{'max_chars'}}).\n"
+        f"If the translation would be longer, abbreviate naturally to fit within the original length.\n"
         f"2. Preserve punctuation and any leading/trailing spaces exactly.\n"
         f"3. Do NOT translate obvious code identifiers, file names, register names, or gibberish (return them unchanged).\n"
         f"4. Only use printable ASCII characters (a-z, A-Z, 0-9, punctuation, space). No accents, no unicode — Gameboy fonts can't render them.\n"
-        f"5. Return STRICT JSON only — a single JSON array of objects with keys \"id\" and \"translated\". No prose, no code fences.\n\n"
+        f'5. Do NOT include backslash (\\) in the translated text. If original has a backslash, replace it with "/". '
+        f"Do NOT use any escape sequences.\n"
+        f'6. Return STRICT RFC 8259 JSON only — a single JSON array of objects with exactly two keys: "id" and "translated". '
+        f"No prose, no code fences, no markdown. Each object on its own line for readability is OK.\n\n"
         f"INPUT (one JSON object per line):\n{joined}\n\n"
-        f"OUTPUT: JSON array only."
+        f"OUTPUT: JSON array only, well-formed."
     )
 
 
@@ -536,6 +540,7 @@ async def _translate_batch(
     provider: str,
     model: Optional[str],
     api_key: Optional[str],
+    _depth: int = 0,
 ) -> List[TranslatedString]:
     if not batch:
         return []
@@ -559,13 +564,18 @@ async def _translate_batch(
     if text.startswith("```"):
         text = re.sub(r"^```(?:json)?\s*", "", text)
         text = re.sub(r"\s*```$", "", text)
-    try:
-        parsed = json.loads(text)
-    except Exception:
-        m = re.search(r"\[.*\]", text, re.DOTALL)
-        if not m:
-            raise HTTPException(status_code=502, detail="Translator returned invalid JSON")
-        parsed = json.loads(m.group())
+
+    parsed = _lenient_json_parse(text)
+    if parsed is None:
+        # Split batch in half and retry each half separately — smaller output has less
+        # chance of hitting the malformed-JSON case. Recurse up to 3 levels deep.
+        if len(batch) > 3 and _depth < 3:
+            mid = len(batch) // 2
+            logging.warning(f"Invalid JSON at depth={_depth}, splitting batch of {len(batch)} into {mid}+{len(batch)-mid}")
+            left = await _translate_batch(target_lang_name, batch[:mid], provider, model, api_key, _depth + 1)
+            right = await _translate_batch(target_lang_name, batch[mid:], provider, model, api_key, _depth + 1)
+            return left + right
+        raise HTTPException(status_code=502, detail="Translator returned invalid JSON")
 
     by_id = {p.get("id"): p.get("translated", "") for p in parsed if isinstance(p, dict)}
     results = []
@@ -574,6 +584,63 @@ async def _translate_batch(
         tr = "".join(ch if 0x20 <= ord(ch) <= 0x7E else "?" for ch in tr)
         results.append(TranslatedString(id=s.id, original=s.text, translated=tr))
     return results
+
+
+def _lenient_json_parse(text: str):
+    """Try progressively more forgiving JSON parsers. Returns list or None."""
+    # 1. Strict json.loads
+    try:
+        v = json.loads(text)
+        if isinstance(v, list):
+            return v
+    except Exception:
+        pass
+    # 2. Find array in text
+    m = re.search(r"\[.*\]", text, re.DOTALL)
+    if m:
+        try:
+            v = json.loads(m.group())
+            if isinstance(v, list):
+                return v
+        except Exception:
+            pass
+        # 3. json_repair (lenient)
+        try:
+            repaired = _repair_json(m.group())
+            if isinstance(repaired, str):
+                v = json.loads(repaired)
+            else:
+                v = repaired
+            if isinstance(v, list):
+                return v
+        except Exception:
+            pass
+    # 4. Full-text json_repair
+    try:
+        repaired = _repair_json(text)
+        if isinstance(repaired, str):
+            v = json.loads(repaired)
+        else:
+            v = repaired
+        if isinstance(v, list):
+            return v
+    except Exception:
+        pass
+    # 5. Line-by-line JSON objects fallback: {"id":"...","translated":"..."}
+    objs = []
+    for m in re.finditer(r'\{[^{}]*"id"\s*:\s*"([^"]+)"[^{}]*"translated"\s*:\s*"((?:[^"\\]|\\.)*)"[^{}]*\}', text):
+        try:
+            obj = json.loads(m.group(0))
+            objs.append(obj)
+        except Exception:
+            try:
+                obj = json.loads(_repair_json(m.group(0)))
+                objs.append(obj)
+            except Exception:
+                continue
+    if objs:
+        return objs
+    return None
 
 
 @api_router.post("/rom/translate")
