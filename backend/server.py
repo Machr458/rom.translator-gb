@@ -17,6 +17,12 @@ from datetime import datetime, timezone
 from emergentintegrations.llm.chat import LlmChat, UserMessage
 from google import genai as google_genai
 
+from charmaps import (
+    extract_pokemon_gen3_runs,
+    encode_pokemon_gen3,
+    detect_encoding,
+)
+
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -94,6 +100,7 @@ class ExtractResponse(BaseModel):
     filename: str
     rom_size: int
     rom_type: str
+    encoding: str
     strings: List[ExtractedString]
 
 class TranslateRequest(BaseModel):
@@ -162,18 +169,16 @@ def detect_rom_type(filename: str, size: int) -> str:
     return "Game Boy"
 
 
-def extract_strings_from_bytes(data: bytes) -> List[ExtractedString]:
+def extract_ascii_from_bytes(data: bytes) -> List[ExtractedString]:
     results: List[ExtractedString] = []
     seen_texts = set()
     for m in PRINTABLE_RE.finditer(data):
         text = m.group().decode("ascii", errors="ignore").strip()
         if len(text) < MIN_STRING_LEN:
             continue
-        # Filter noise: require at least one letter and >=2 vowels-ish OR contains spaces
         letters = sum(1 for c in text if c.isalpha())
         if letters < 3:
             continue
-        # dedupe by lowercased text (translate once) but keep first offset info
         key = text.lower()
         if key in seen_texts:
             continue
@@ -187,6 +192,20 @@ def extract_strings_from_bytes(data: bytes) -> List[ExtractedString]:
         if len(results) >= MAX_STRINGS:
             break
     return results
+
+
+def extract_gen3_from_bytes(data: bytes) -> List[ExtractedString]:
+    runs = extract_pokemon_gen3_runs(data, min_length=8, max_results=MAX_STRINGS)
+    return [
+        ExtractedString(id=str(uuid.uuid4()), offset=off, length=length, text=text)
+        for off, length, text in runs
+    ]
+
+
+def extract_strings_from_bytes(data: bytes, encoding: str = "ascii") -> List[ExtractedString]:
+    if encoding == "pokemon_gen3":
+        return extract_gen3_from_bytes(data)
+    return extract_ascii_from_bytes(data)
 
 
 # ---------- Session storage (ROM binary) ----------
@@ -214,8 +233,20 @@ async def get_providers():
     return PROVIDERS
 
 
+@api_router.get("/encodings")
+async def get_encodings():
+    return [
+        {"id": "auto", "label": "Auto-detect (recommended)"},
+        {"id": "ascii", "label": "ASCII (homebrew, dev ROMs)"},
+        {"id": "pokemon_gen3", "label": "Pokemon Gen 3 (Emerald / Ruby / Sapphire / FRLG)"},
+    ]
+
+
 @api_router.post("/rom/extract", response_model=ExtractResponse)
-async def extract_rom(file: UploadFile = File(...)):
+async def extract_rom(
+    file: UploadFile = File(...),
+    encoding: str = Form("auto"),
+):
     fn = file.filename or "rom.gb"
     if not fn.lower().endswith((".gb", ".gbc", ".gba")):
         raise HTTPException(status_code=400, detail="Unsupported file type. Use .gb, .gbc or .gba")
@@ -226,10 +257,17 @@ async def extract_rom(file: UploadFile = File(...)):
     if len(data) > 40 * 1024 * 1024:
         raise HTTPException(status_code=400, detail="ROM too large (max 40MB)")
 
+    # Resolve encoding: auto-detect if requested
+    enc = encoding
+    if enc == "auto":
+        enc = detect_encoding(data, fn)
+    if enc not in {"ascii", "pokemon_gen3"}:
+        raise HTTPException(status_code=400, detail=f"Unknown encoding '{enc}'")
+
     session_id = str(uuid.uuid4())
     rom_path(session_id).write_bytes(data)
 
-    strings = extract_strings_from_bytes(data)
+    strings = extract_strings_from_bytes(data, encoding=enc)
     rom_type = detect_rom_type(fn, len(data))
 
     record = {
@@ -237,6 +275,7 @@ async def extract_rom(file: UploadFile = File(...)):
         "filename": fn,
         "rom_size": len(data),
         "rom_type": rom_type,
+        "encoding": enc,
         "string_count": len(strings),
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -247,6 +286,7 @@ async def extract_rom(file: UploadFile = File(...)):
         filename=fn,
         rom_size=len(data),
         rom_type=rom_type,
+        encoding=enc,
         strings=strings,
     )
 
@@ -488,10 +528,13 @@ async def patch_rom(req: PatchRequest):
     if not p.exists():
         raise HTTPException(status_code=404, detail="ROM session not found")
 
+    sess = await db.rom_sessions.find_one({"session_id": req.session_id}, {"_id": 0})
+    enc = (sess or {}).get("encoding", "ascii")
+
     data = bytearray(p.read_bytes())
 
-    # We need offsets — load them from the extraction (re-extract to get canonical mapping)
-    strings = extract_strings_from_bytes(bytes(data))
+    # Re-extract to get canonical offset mapping using the same encoding
+    strings = extract_strings_from_bytes(bytes(data), encoding=enc)
     text_to_meta = {s.text: (s.offset, s.length) for s in strings}
 
     patched = 0
@@ -500,16 +543,17 @@ async def patch_rom(req: PatchRequest):
         if not meta:
             continue
         offset, length = meta
-        payload = t.translated.encode("ascii", errors="replace")
-        if len(payload) > length:
-            payload = payload[:length]
+        if enc == "pokemon_gen3":
+            payload = encode_pokemon_gen3(t.translated, length)
         else:
-            # pad with spaces to preserve length
-            payload = payload + b" " * (length - len(payload))
+            raw = t.translated.encode("ascii", errors="replace")
+            if len(raw) > length:
+                payload = raw[:length]
+            else:
+                payload = raw + b" " * (length - len(raw))
         data[offset:offset + length] = payload
         patched += 1
 
-    sess = await db.rom_sessions.find_one({"session_id": req.session_id}, {"_id": 0})
     fn = (sess or {}).get("filename", "rom.gb")
     base, ext = os.path.splitext(fn)
     out_name = f"{base}_translated{ext}"

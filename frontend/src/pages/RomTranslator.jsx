@@ -38,6 +38,8 @@ const MODES = [
 export default function RomTranslator() {
   const [languages, setLanguages] = useState([]);
   const [providers, setProviders] = useState({});
+  const [encodings, setEncodings] = useState([]);
+  const [encoding, setEncoding] = useState("auto");
   const [aiSettings, setAiSettings] = useState(loadSettings());
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [targetLang, setTargetLang] = useState("cs");
@@ -60,6 +62,7 @@ export default function RomTranslator() {
   useEffect(() => {
     axios.get(`${API}/languages`).then((r) => setLanguages(r.data)).catch(() => { /* ignore */ });
     axios.get(`${API}/providers`).then((r) => setProviders(r.data)).catch(() => { /* ignore */ });
+    axios.get(`${API}/encodings`).then((r) => setEncodings(r.data)).catch(() => { /* ignore */ });
     loadHistory();
     pushLog("SYSTEM READY. Insert cartridge to begin.", "sys");
   }, [pushLog]);
@@ -109,6 +112,7 @@ export default function RomTranslator() {
     try {
       const fd = new FormData();
       fd.append("file", file);
+      fd.append("encoding", encoding);
       const r = await axios.post(`${API}/rom/extract`, fd, {
         headers: { "Content-Type": "multipart/form-data" },
         onUploadProgress: (e) => {
@@ -120,6 +124,7 @@ export default function RomTranslator() {
       setStatus("ready");
       pushLog(`  TYPE  : ${r.data.rom_type}`, "info");
       pushLog(`  SIZE  : ${(r.data.rom_size / 1024).toFixed(1)} KB`, "info");
+      pushLog(`  ENC   : ${r.data.encoding}`, "info");
       pushLog(`  FOUND : ${r.data.strings.length} strings`, "ok");
       pushLog(`> READY. Choose target language and press TRANSLATE.`, "cmd");
       loadHistory();
@@ -332,6 +337,23 @@ export default function RomTranslator() {
             </SelectContent>
           </Select>
 
+          <label className="font-mono text-[10px] uppercase text-neutral-500 tracking-wider mt-5 mb-2 block">Text Encoding</label>
+          <Select value={encoding} onValueChange={setEncoding}>
+            <SelectTrigger
+              className="h-11 bg-neutral-950 border-neutral-700 rounded-sm font-mono text-sm"
+              data-testid="encoding-select"
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent className="bg-neutral-900 border-neutral-800 rounded-sm">
+              {encodings.map((e) => (
+                <SelectItem key={e.id} value={e.id} className="font-mono text-sm" data-testid={`encoding-option-${e.id}`}>
+                  {e.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+
           <label className="font-mono text-[10px] uppercase text-neutral-500 tracking-wider mt-5 mb-2 block">Output Mode</label>
           <div className="grid grid-cols-2 gap-2">
             {MODES.map((m) => {
@@ -449,6 +471,7 @@ export default function RomTranslator() {
           <dl className="space-y-3 font-mono text-xs">
             <StatRow label="ROM Type" value={session?.rom_type || "—"} />
             <StatRow label="Size" value={session ? `${(session.rom_size / 1024).toFixed(1)} KB` : "—"} />
+            <StatRow label="Encoding" value={session?.encoding || encoding} highlight={session?.encoding === "pokemon_gen3"} />
             <StatRow label="Strings" value={session?.strings?.length ?? "—"} highlight />
             <StatRow label="Target" value={targetLang.toUpperCase()} />
             <StatRow label="Mode" value={mode === "view" ? "VIEW" : "PATCH"} />
