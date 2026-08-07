@@ -266,12 +266,17 @@ export default function RomTranslator() {
   };
 
   const exportTxt = async () => {
-    if (!session || !translations.length) return;
-    pushLog(`> EXPORT TXT :: ${translations.length} strings...`, "cmd");
+    if (!session) return;
+    // If AI translation hasn't run (or partially failed), export a template with originals
+    // as placeholders — user can then translate manually in a text editor.
+    const items = (translations && translations.length > 0)
+      ? translations
+      : session.strings.map((s) => ({ id: s.id, original: s.text, translated: "" }));
+    pushLog(`> EXPORT TXT :: ${items.length} strings${translations.length ? "" : " (template, no AI translation yet)"}...`, "cmd");
     try {
       const r = await axios.post(
         `${API}/rom/export`,
-        { session_id: session.session_id, translations },
+        { session_id: session.session_id, translations: items },
         { responseType: "blob" }
       );
       const blob = new Blob([r.data], { type: "text/plain; charset=utf-8" });
@@ -285,8 +290,9 @@ export default function RomTranslator() {
       pushLog(`  DONE. TXT downloaded — edit and re-upload via 'Insert Translation'.`, "ok");
       toast.success("Textový soubor stažen!");
     } catch (e) {
-      pushLog(`! EXPORT FAILED: ${e.message}`, "err");
-      toast.error("Export failed");
+      const msg = e.response?.data?.detail || e.message;
+      pushLog(`! EXPORT FAILED: ${msg}`, "err");
+      toast.error(`Export failed: ${msg}`);
     }
   };
 
@@ -573,7 +579,7 @@ export default function RomTranslator() {
             <>
               <button
                 onClick={exportTxt}
-                disabled={status !== "done"}
+                disabled={!session}
                 className="mt-3 w-full h-11 bg-transparent border border-[#8BAC0F] text-[#9BBC0F] font-display font-bold text-sm tracking-wide rounded-sm disabled:opacity-30 disabled:cursor-not-allowed hover:bg-[#8BAC0F]/10 transition-colors flex items-center justify-center gap-2"
                 data-testid="export-txt-btn"
               >
