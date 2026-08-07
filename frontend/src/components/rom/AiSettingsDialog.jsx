@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react";
+import axios from "axios";
+import { toast } from "sonner";
 import {
   Dialog,
   DialogContent,
@@ -14,7 +16,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { KeyRound, Sparkles, ShieldCheck } from "lucide-react";
+import { KeyRound, Sparkles, ShieldCheck, PlugZap, Loader2, CheckCircle2, XCircle } from "lucide-react";
+
+const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
+const API = `${BACKEND_URL}/api`;
 
 const STORAGE_KEY = "romtrans.ai_settings";
 
@@ -36,12 +41,15 @@ export default function AiSettingsDialog({ open, onOpenChange, providers, settin
   const [provider, setProvider] = useState(settings.provider || "emergent");
   const [model, setModel] = useState(settings.model || "");
   const [apiKey, setApiKey] = useState(settings.apiKey || "");
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState(null);
 
   useEffect(() => {
     if (open) {
       setProvider(settings.provider || "emergent");
       setModel(settings.model || "");
       setApiKey(settings.apiKey || "");
+      setTestResult(null);
     }
   }, [open, settings]);
 
@@ -140,7 +148,17 @@ export default function AiSettingsDialog({ open, onOpenChange, providers, settin
           </div>
         </div>
 
-        <DialogFooter className="gap-2">
+        <DialogFooter className="gap-2 flex-col sm:flex-row items-stretch">
+          <button
+            onClick={handleTest}
+            disabled={testing}
+            className="h-10 px-4 border border-neutral-700 hover:border-[#8BAC0F] rounded-sm font-mono text-xs uppercase tracking-wider text-neutral-300 hover:text-[#9BBC0F] flex items-center justify-center gap-2 disabled:opacity-40"
+            data-testid="settings-test"
+          >
+            {testing ? <Loader2 className="w-4 h-4 animate-spin" /> : <PlugZap className="w-4 h-4" />}
+            {testing ? "Testing..." : "Test Key"}
+          </button>
+          <div className="flex-1" />
           <button
             onClick={() => onOpenChange(false)}
             className="h-10 px-4 border border-neutral-700 rounded-sm font-mono text-xs uppercase tracking-wider text-neutral-400 hover:border-neutral-600"
@@ -156,6 +174,29 @@ export default function AiSettingsDialog({ open, onOpenChange, providers, settin
             Save
           </button>
         </DialogFooter>
+
+        {testResult && (
+          <div
+            className={`mt-3 border rounded-sm p-3 font-mono text-[11px] ${testResult.ok ? "border-[#8BAC0F] bg-[#8BAC0F]/5" : "border-[#C7305C] bg-[#C7305C]/5"}`}
+            data-testid="test-result"
+          >
+            <div className="flex items-center gap-2 mb-1.5">
+              {testResult.ok ? (
+                <><CheckCircle2 className="w-4 h-4 text-[#8BAC0F]" /><span className="text-[#9BBC0F] font-bold">OK</span></>
+              ) : (
+                <><XCircle className="w-4 h-4 text-[#C7305C]" /><span className="text-[#C7305C] font-bold">FAILED</span></>
+              )}
+              {testResult.key_masked && (
+                <span className="text-neutral-500">key: {testResult.key_masked} ({testResult.key_source})</span>
+              )}
+            </div>
+            {testResult.ok ? (
+              <p className="text-neutral-400">Reply: <span className="text-[#9BBC0F]">"{testResult.reply}"</span></p>
+            ) : (
+              <p className="text-neutral-300">{testResult.friendly || testResult.error}</p>
+            )}
+          </div>
+        )}
       </DialogContent>
     </Dialog>
   );

@@ -90,12 +90,15 @@ JOBS: dict = {}
 
 def _error_code(err: str) -> str:
     low = (err or "").lower()
-    if "emergent_budget_exceeded" in low or "budget has been exceeded" in low:
+    if "emergent_budget_exceeded" in low or "budget has been exceeded" in low or "max budget" in low:
         return "EMERGENT_BUDGET_EXCEEDED"
-    if "resource_exhausted" in low or "429" in low or "quota" in low or "rate" in low:
-        return "QUOTA_EXCEEDED"
-    if "invalid api key" in low or "unauthorized" in low or "api key missing" in low:
+    # Check INVALID_KEY before QUOTA to avoid false 'rate' match inside 'gene-rate'
+    if ("invalid api key" in low or "unauthorized" in low or "api key missing" in low
+            or "authenticationerror" in low or "invalid_api_key" in low):
         return "INVALID_KEY"
+    if ("resource_exhausted" in low or " 429" in low or "quota" in low
+            or "rate limit" in low or "ratelimit" in low or "too many requests" in low):
+        return "QUOTA_EXCEEDED"
     if "timeout" in low:
         return "TIMEOUT"
     return "UPSTREAM_ERROR"
@@ -274,6 +277,57 @@ async def get_languages():
 @api_router.get("/providers")
 async def get_providers():
     return PROVIDERS
+
+
+class TestKeyRequest(BaseModel):
+    provider: str
+    model: Optional[str] = None
+    api_key: Optional[str] = None
+
+
+@api_router.post("/ai/test")
+async def test_ai_key(req: TestKeyRequest):
+    """Send a tiny prompt to validate the provider+key combination.
+    Returns which key was actually used (masked) and the outcome.
+    """
+    key_used = req.api_key or (EMERGENT_LLM_KEY if req.provider == "emergent" else None)
+    masked = f"{key_used[:8]}...{key_used[-4:]}" if key_used and len(key_used) > 12 else "(none)"
+    key_source = "user" if req.api_key else ("server" if req.provider == "emergent" else "user")
+
+    logging.info(f"[test_ai_key] provider={req.provider} model={req.model} key_source={key_source} key={masked}")
+
+    try:
+        resp = await _call_llm("Reply with exactly one word: PONG", req.provider, req.model, req.api_key)
+        return {
+            "ok": True,
+            "reply": (resp or "").strip()[:100],
+            "provider": req.provider,
+            "model": req.model or PROVIDERS.get(req.provider, {}).get("default"),
+            "key_source": key_source,
+            "key_masked": masked,
+        }
+    except HTTPException as e:
+        return {
+            "ok": False,
+            "error": str(e.detail)[:400],
+            "error_code": _error_code(str(e.detail)),
+            "friendly": _friendly_error(str(e.detail)),
+            "provider": req.provider,
+            "model": req.model or PROVIDERS.get(req.provider, {}).get("default"),
+            "key_source": key_source,
+            "key_masked": masked,
+        }
+    except Exception as e:
+        return {
+            "ok": False,
+            "error": str(e)[:400],
+            "error_code": _error_code(str(e)),
+            "friendly": _friendly_error(str(e)),
+            "provider": req.provider,
+            "model": req.model or PROVIDERS.get(req.provider, {}).get("default"),
+            "key_source": key_source,
+            "key_masked": masked,
+        }
 
 
 @api_router.get("/encodings")
