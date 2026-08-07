@@ -1,0 +1,131 @@
+{
+  "theme": "dark",
+  "concept": "The Gameboy Terminal: A developer-focused, neo-brutalist bento grid combining classic Gameboy DMG-01 color theory with modern AI translation utilities.",
+  "typography": {
+    "headings": {
+      "fontFamily": "Outfit, sans-serif",
+      "strategy": "Geometric and sharp. Use tight tracking (tracking-tight) for large headers.",
+      "sizes": "max text-4xl for hero, text-xl for bento card titles."
+    },
+    "body": {
+      "fontFamily": "Inter, sans-serif",
+      "strategy": "High legibility for dense side-by-side translation comparisons."
+    },
+    "monospace": {
+      "fontFamily": "JetBrains Mono, monospace",
+      "strategy": "CRITICAL: Used for memory addresses, extraction logs, translation progress counters, and hex values.",
+      "sizes": "text-xs to text-sm"
+    }
+  },
+  "colors": {
+    "background": {
+      "hex": "#0a0a0a",
+      "tailwind": "bg-neutral-950",
+      "usage": "Global app background."
+    },
+    "surface": {
+      "hex": "#141414",
+      "tailwind": "bg-neutral-900",
+      "usage": "Bento grid card backgrounds. Should have a 1px border of #262626 (border-neutral-800)."
+    },
+    "primary": {
+      "name": "DMG Olive",
+      "hex": "#8BAC0F",
+      "tailwind": "bg-[#8BAC0F] text-[#8BAC0F]",
+      "usage": "Primary CTA, active states, and successful translation highlights. High contrast against dark background."
+    },
+    "primary_dark": {
+      "hex": "#306230",
+      "tailwind": "bg-[#306230]",
+      "usage": "Subtle highlights, progress bar backgrounds."
+    },
+    "accent_red": {
+      "name": "Gameboy Action Red",
+      "hex": "#C7305C",
+      "tailwind": "bg-[#C7305C] text-[#C7305C]",
+      "usage": "Error states, stop translation button, destructive actions."
+    },
+    "text_main": {
+      "tailwind": "text-neutral-50",
+      "usage": "Primary readable text."
+    },
+    "text_muted": {
+      "tailwind": "text-neutral-400",
+      "usage": "Secondary text and table headers."
+    },
+    "terminal_glow": {
+      "tailwind": "text-[#9BBC0F] drop-shadow-[0_0_8px_rgba(155,188,15,0.4)]",
+      "usage": "Used exclusively inside the extraction progress terminal."
+    }
+  },
+  "visual_enhancers": {
+    "borders": "1px solid neutral-800 for cards. Avoid heavy rounded corners. Use rounded-none or max rounded-sm (2px) to enforce a hardware/pixel aesthetic.",
+    "shadows": "Neo-brutalist interaction shadows on buttons: shadow-[4px_4px_0_0_#8BAC0F] on default, translate-x-[2px] translate-y-[2px] shadow-[2px_2px_0_0_#8BAC0F] on active/click.",
+    "textures": "Apply a subtle scanline CSS gradient overlay to the Terminal/Log viewer.",
+    "glassmorphism": "FORBIDDEN for this context. Use flat solid backgrounds to represent hardware logic."
+  },
+  "grids_layouts": {
+    "strategy": "Developer Bento Grid (SaaSFrame Pattern)",
+    "desktop": "grid-cols-12 gap-6, p-6 or p-8 container padding.",
+    "tablet": "grid-cols-8 gap-4",
+    "mobile": "grid-cols-1 gap-4",
+    "zones": {
+      "header": "col-span-full flex justify-between items-center py-4 border-b border-neutral-800 mb-4",
+      "dropzone_card": "col-span-full lg:col-span-4 row-span-1. Styled like a cartridge insertion slot. Dotted border.",
+      "settings_card": "col-span-full lg:col-span-4 row-span-1. Language selector and Mode toggle.",
+      "history_card": "col-span-full lg:col-span-4 row-span-2. List of recent translation sessions.",
+      "terminal_logs": "col-span-full lg:col-span-8 row-span-1. Black background, monospace green text, auto-scrolling.",
+      "translation_viewer": "col-span-full. Two-column table layout (Original vs Translated). Dense padding (p-2)."
+    }
+  },
+  "components": {
+    "dropzone": "HTML/Tailwind implementation. hover:border-[#8BAC0F] transition-colors. Include Lucide 'Gamepad2' or 'FileArchive' icon. Needs drag-and-drop state styles.",
+    "language_selector": "Shadcn UI Select. Customize trigger to have sharp corners and dense padding (h-9). Target languages: CS, EN, DE, ES, FR, PL, SK, IT, JP.",
+    "mode_toggle": "Custom segmented control. Options: 'View Translations', 'Generate Patched ROM'.",
+    "progress_bar": "Custom blocky progress bar. Instead of continuous fill, use discrete blocks (like a battery meter or retro loading bar).",
+    "side_by_side_table": "Use HTML table or CSS grid. Left side: neutral-400 text. Right side: neutral-50 text. When AI translates a string, right side flashes #8BAC0F before settling.",
+    "download_button": "Large primary button. Only enabled when mode is 'Generate Patched ROM' and translation is complete."
+  },
+  "motion": {
+    "hover_states": "Buttons translate slightly or borders brighten. No soft fading.",
+    "transitions": "Fast and snappy. 150ms ease-in-out.",
+    "terminal_typing": "New extracted strings should appear instantly, mimicking a fast CLI output."
+  },
+  "accessibility": {
+    "contrast": "Ensure #8BAC0F on dark background passes APCA. Use black text (#000000) when placed INSIDE a #8BAC0F background button.",
+    "focus": "focus:ring-2 focus:ring-[#8BAC0F] focus:outline-none focus:ring-offset-2 focus:ring-offset-neutral-950",
+    "testing": "All interactive elements MUST have data-testid attributes (e.g., data-testid='upload-rom-zone', data-testid='language-select', data-testid='download-btn')."
+  },
+  "responsive": {
+    "breakpoint": "mobile-first",
+    "layout": "Stack all bento boxes vertically on mobile. Header -> Dropzone -> Settings -> Terminal -> Table -> History.",
+    "typography": "Scale headings to text-2xl max on mobile. Maintain text-xs for terminal to prevent text wrap issues.",
+    "overflow_guard": "Add overflow-x-auto to the side-by-side table so it can be horizontally scrolled on mobile without breaking the page layout.",
+    "tap_targets": "Ensure minimum 44px height for language selectors and buttons on mobile."
+  },
+  "media_assets": {
+    "icons_library": "lucide-react (apply crisp sizing, stroke-width 1.5 or 2)",
+    "images": [
+      {
+        "url": "https://images.unsplash.com/photo-1609603078698-1e58d44e9a35?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzMzJ8MHwxfHNlYXJjaHwxfHxnYW1lYm95JTIwY29uc29sZSUyMG1hY3JvJTIwcGhvdG9ncmFwaHl8ZW58MHx8fHwxNzg2MTIwMDI2fDA&ixlib=rb-4.1.0&q=85",
+        "description": "Macro shot of a classic Gameboy to be used as a very subtle, low-opacity (5%) background image or in an empty state graphic."
+      }
+    ]
+  },
+  "instructions_to_main_agent": [
+    "Read the guidelines thoroughly. The aesthetic is a Neo-Brutalist Developer Tool inspired by the Gameboy DMG-01.",
+    "Use JetBrains Mono for all logs and memory/translation strings. Import it in index.css.",
+    "Install lucide-react if not present, and sonner for toasts.",
+    "Do NOT center align the app container. Align left/top following a structured bento grid.",
+    "Implement the side-by-side viewer as a high-density, scrollable container with a sticky header.",
+    "Use strict rounded-sm borders. NO rounded-xl or rounded-full pills.",
+    "MANDATORY: Make the layout fully mobile-responsive. Use single column on mobile, transitioning to CSS Grid on lg screens.",
+    "MANDATORY: Include data-testid attributes on every interactive element."
+  ],
+  "UNIVERSAL_GUIDELINES_FOR_MAIN_AGENT": [
+    "You tend to converge toward generic, 'on distribution' outputs. Make this frontend distinctive and hardware-inspired.",
+    "Avoid generic centered layouts, simplistic gradients, and uniform styling.",
+    "Do not use AI assistant Emojis for icons. Use strictly Lucide icons.",
+    "Add transitions for specific interactive elements (e.g., transition-transform, transition-colors), DO NOT use 'transition-all'."
+  ]
+}
