@@ -15,6 +15,7 @@ from typing import List, Optional, Literal
 from datetime import datetime, timezone
 
 from emergentintegrations.llm.chat import LlmChat, UserMessage
+from google import genai as google_genai
 
 
 ROOT_DIR = Path(__file__).parent
@@ -26,7 +27,12 @@ client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
 
 EMERGENT_LLM_KEY = os.environ.get('EMERGENT_LLM_KEY')
-GEMINI_MODEL = "gemini-3.1-pro-preview"
+GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
+# Primary: user's own Gemini key via google-genai SDK. Fallback: Emergent LLM via emergentintegrations.
+GEMINI_PRIMARY_MODEL = "gemini-3-flash-preview"
+GEMINI_FALLBACK_MODEL = "gemini-3-flash-preview"
+
+_genai_client = google_genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
 app = FastAPI()
 api_router = APIRouter(prefix="/api")
@@ -210,21 +216,50 @@ def _build_translation_prompt(target_lang_name: str, strings: List[ExtractedStri
     )
 
 
+async def _call_gemini(prompt: str) -> str:
+    """Call Gemini using user's key primarily, then Emergent LLM as fallback."""
+    import asyncio
+
+    last_err = None
+    # Attempt 1-2: user's own key
+    if _genai_client is not None:
+        for attempt in range(2):
+            try:
+                resp = await asyncio.to_thread(
+                    _genai_client.models.generate_content,
+                    model=GEMINI_PRIMARY_MODEL,
+                    contents=prompt,
+                )
+                return resp.text or ""
+            except Exception as e:
+                last_err = e
+                logging.warning(f"User Gemini key attempt {attempt+1} failed: {str(e)[:200]}")
+                await asyncio.sleep(1.2 * (attempt + 1))
+
+    # Fallback: Emergent LLM key
+    if EMERGENT_LLM_KEY:
+        try:
+            chat = LlmChat(
+                api_key=EMERGENT_LLM_KEY,
+                session_id=f"trans-{uuid.uuid4()}",
+                system_message="You are a precise game text translator that returns only JSON.",
+            ).with_model("gemini", GEMINI_FALLBACK_MODEL)
+            resp = await chat.send_message(UserMessage(text=prompt))
+            return resp if isinstance(resp, str) else str(resp)
+        except Exception as e:
+            last_err = e
+            logging.warning(f"Emergent fallback failed: {str(e)[:200]}")
+
+    raise HTTPException(status_code=502, detail=f"Gemini upstream error: {last_err}")
+
+
 async def _translate_batch(target_lang_name: str, batch: List[ExtractedString]) -> List[TranslatedString]:
     if not batch:
         return []
-    chat = LlmChat(
-        api_key=EMERGENT_LLM_KEY,
-        session_id=f"trans-{uuid.uuid4()}",
-        system_message="You are a precise game text translator that returns only JSON.",
-    ).with_model("gemini", GEMINI_MODEL)
 
     prompt = _build_translation_prompt(target_lang_name, batch)
-    resp = await chat.send_message(UserMessage(text=prompt))
+    text = (await _call_gemini(prompt)).strip()
 
-    # Extract JSON
-    text = resp if isinstance(resp, str) else str(resp)
-    text = text.strip()
     # Strip code fences if present
     if text.startswith("```"):
         text = re.sub(r"^```(?:json)?\s*", "", text)
@@ -232,7 +267,6 @@ async def _translate_batch(target_lang_name: str, batch: List[ExtractedString]) 
     try:
         parsed = json.loads(text)
     except Exception:
-        # Try to find JSON array in text
         m = re.search(r"\[.*\]", text, re.DOTALL)
         if not m:
             raise HTTPException(status_code=502, detail="Translator returned invalid JSON")
@@ -242,7 +276,6 @@ async def _translate_batch(target_lang_name: str, batch: List[ExtractedString]) 
     results = []
     for s in batch:
         tr = by_id.get(s.id, s.text)
-        # sanitize to ASCII printable
         tr = "".join(ch if 0x20 <= ord(ch) <= 0x7E else "?" for ch in tr)
         results.append(TranslatedString(id=s.id, original=s.text, translated=tr))
     return results

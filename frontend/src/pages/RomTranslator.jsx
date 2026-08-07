@@ -117,7 +117,7 @@ export default function RomTranslator() {
     setStatus("translating");
     setProgress(5);
     setTranslations(session.strings.map((s) => ({ id: s.id, original: s.text, translated: "" })));
-    pushLog(`> TRANSLATE :: target=${targetLang.toUpperCase()} model=gemini-3.1-pro`, "cmd");
+    pushLog(`> TRANSLATE :: target=${targetLang.toUpperCase()} model=gemini-3-flash`, "cmd");
     pushLog(`  Sending ${session.strings.length} strings to AI...`, "info");
 
     // Simulated progress while waiting
@@ -189,7 +189,7 @@ export default function RomTranslator() {
           </div>
           <div className="hidden sm:flex items-center gap-2 text-xs font-mono text-neutral-500">
             <div className="w-2 h-2 bg-[#8BAC0F] rounded-full animate-pulse" />
-            <span>ONLINE · gemini-3.1-pro</span>
+            <span>ONLINE · gemini-3-flash</span>
           </div>
         </div>
       </header>
@@ -425,7 +425,7 @@ export default function RomTranslator() {
       <footer className="border-t border-neutral-800 mt-8 py-6 px-6">
         <div className="max-w-[1400px] mx-auto flex flex-col sm:flex-row items-center justify-between gap-2 font-mono text-[10px] text-neutral-600 uppercase tracking-widest">
           <span>rom.translate · v0.1 · dmg-01 mode</span>
-          <span>powered by gemini 3.1 pro · emergent llm</span>
+          <span>powered by gemini 3 flash · your api key</span>
         </div>
       </footer>
     </div>
