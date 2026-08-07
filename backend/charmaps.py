@@ -87,7 +87,7 @@ def extract_pokemon_gen3_runs(data: bytes, min_length: int = 8, max_results: int
                 letters = sum(1 for c in text if c.isalpha())
                 spaces = sum(1 for c in text if c == " ")
                 # Reject padding-heavy runs (mostly 0x00 with just one letter)
-                if letters < 4 or spaces > len(text) * 0.7:
+                if letters < 3 or spaces > len(text) * 0.7:
                     i += 1
                     continue
                 key = text.lower()
@@ -102,6 +102,32 @@ def extract_pokemon_gen3_runs(data: bytes, min_length: int = 8, max_results: int
         else:
             i += 1
     return results
+
+
+def count_pokemon_gen3_runs(data: bytes, min_length: int = 5) -> int:
+    """Count total unique Gen3 text runs (for user info)."""
+    seen = set()
+    i = 0
+    n = len(data)
+    while i < n:
+        if _is_gen3_letter(data[i]):
+            start = i
+            chars = []
+            while i < n and _is_gen3_char(data[i]):
+                chars.append(POKEMON_GEN3_CHARMAP[data[i]])
+                i += 1
+            length = i - start
+            if i < n and data[i] in GEN3_CONTROL_BYTES and length >= min_length:
+                text = "".join(chars).rstrip()
+                letters = sum(1 for c in text if c.isalpha())
+                spaces = sum(1 for c in text if c == " ")
+                if len(text) >= min_length and letters >= 3 and spaces <= len(text) * 0.7:
+                    seen.add(text.lower())
+            else:
+                i = start + 1
+        else:
+            i += 1
+    return len(seen)
 
 
 def encode_pokemon_gen3(text: str, target_length: int) -> bytes:

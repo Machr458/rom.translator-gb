@@ -21,6 +21,7 @@ from charmaps import (
     extract_pokemon_gen3_runs,
     encode_pokemon_gen3,
     detect_encoding,
+    count_pokemon_gen3_runs,
 )
 
 
@@ -101,6 +102,7 @@ class ExtractResponse(BaseModel):
     rom_size: int
     rom_type: str
     encoding: str
+    found_total: int
     strings: List[ExtractedString]
 
 class TranslateRequest(BaseModel):
@@ -150,9 +152,10 @@ LANGUAGE_NAMES = {
 }
 
 MIN_STRING_LEN = 4
-MAX_STRINGS = 150  # cap to keep translation cost reasonable
-BATCH_SIZE = 15     # smaller batches -> faster individual Gemini calls
-MAX_PARALLEL = 8    # parallel batch calls
+DEFAULT_MAX_STRINGS = 500     # sensible default per extract
+HARD_MAX_STRINGS = 5000       # hard cap regardless of user choice
+BATCH_SIZE = 20               # bigger batches -> fewer Gemini calls at scale
+MAX_PARALLEL = 8              # parallel batch calls
 PRINTABLE_RE = re.compile(rb"[\x20-\x7E]{%d,}" % MIN_STRING_LEN)
 
 
@@ -169,7 +172,7 @@ def detect_rom_type(filename: str, size: int) -> str:
     return "Game Boy"
 
 
-def extract_ascii_from_bytes(data: bytes) -> List[ExtractedString]:
+def extract_ascii_from_bytes(data: bytes, max_strings: int) -> List[ExtractedString]:
     results: List[ExtractedString] = []
     seen_texts = set()
     for m in PRINTABLE_RE.finditer(data):
@@ -189,23 +192,25 @@ def extract_ascii_from_bytes(data: bytes) -> List[ExtractedString]:
             length=len(m.group()),
             text=text,
         ))
-        if len(results) >= MAX_STRINGS:
+        if len(results) >= max_strings:
             break
     return results
 
 
-def extract_gen3_from_bytes(data: bytes) -> List[ExtractedString]:
-    runs = extract_pokemon_gen3_runs(data, min_length=8, max_results=MAX_STRINGS)
+def extract_gen3_from_bytes(data: bytes, max_strings: int) -> List[ExtractedString]:
+    # Lower min_length so we catch short dialogs like "Yes!", "OK.", names, menu items
+    runs = extract_pokemon_gen3_runs(data, min_length=5, max_results=max_strings)
     return [
         ExtractedString(id=str(uuid.uuid4()), offset=off, length=length, text=text)
         for off, length, text in runs
     ]
 
 
-def extract_strings_from_bytes(data: bytes, encoding: str = "ascii") -> List[ExtractedString]:
+def extract_strings_from_bytes(data: bytes, encoding: str = "ascii", max_strings: int = DEFAULT_MAX_STRINGS) -> List[ExtractedString]:
+    max_strings = min(max(max_strings, 10), HARD_MAX_STRINGS)
     if encoding == "pokemon_gen3":
-        return extract_gen3_from_bytes(data)
-    return extract_ascii_from_bytes(data)
+        return extract_gen3_from_bytes(data, max_strings)
+    return extract_ascii_from_bytes(data, max_strings)
 
 
 # ---------- Session storage (ROM binary) ----------
@@ -246,6 +251,7 @@ async def get_encodings():
 async def extract_rom(
     file: UploadFile = File(...),
     encoding: str = Form("auto"),
+    max_strings: int = Form(DEFAULT_MAX_STRINGS),
 ):
     fn = file.filename or "rom.gb"
     if not fn.lower().endswith((".gb", ".gbc", ".gba")):
@@ -267,7 +273,12 @@ async def extract_rom(
     session_id = str(uuid.uuid4())
     rom_path(session_id).write_bytes(data)
 
-    strings = extract_strings_from_bytes(data, encoding=enc)
+    strings = extract_strings_from_bytes(data, encoding=enc, max_strings=max_strings)
+    # Count total available (may be >>max_strings) to tell user the truth
+    if enc == "pokemon_gen3":
+        found_total = count_pokemon_gen3_runs(data, min_length=5)
+    else:
+        found_total = len(extract_ascii_from_bytes(data, HARD_MAX_STRINGS))
     rom_type = detect_rom_type(fn, len(data))
 
     record = {
@@ -277,6 +288,7 @@ async def extract_rom(
         "rom_type": rom_type,
         "encoding": enc,
         "string_count": len(strings),
+        "found_total": found_total,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     await db.rom_sessions.insert_one(record)
@@ -287,6 +299,7 @@ async def extract_rom(
         rom_size=len(data),
         rom_type=rom_type,
         encoding=enc,
+        found_total=found_total,
         strings=strings,
     )
 

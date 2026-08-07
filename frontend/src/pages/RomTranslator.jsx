@@ -40,6 +40,7 @@ export default function RomTranslator() {
   const [providers, setProviders] = useState({});
   const [encodings, setEncodings] = useState([]);
   const [encoding, setEncoding] = useState("auto");
+  const [maxStrings, setMaxStrings] = useState(500);
   const [aiSettings, setAiSettings] = useState(loadSettings());
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [targetLang, setTargetLang] = useState("cs");
@@ -113,6 +114,7 @@ export default function RomTranslator() {
       const fd = new FormData();
       fd.append("file", file);
       fd.append("encoding", encoding);
+      fd.append("max_strings", String(maxStrings));
       const r = await axios.post(`${API}/rom/extract`, fd, {
         headers: { "Content-Type": "multipart/form-data" },
         onUploadProgress: (e) => {
@@ -125,7 +127,11 @@ export default function RomTranslator() {
       pushLog(`  TYPE  : ${r.data.rom_type}`, "info");
       pushLog(`  SIZE  : ${(r.data.rom_size / 1024).toFixed(1)} KB`, "info");
       pushLog(`  ENC   : ${r.data.encoding}`, "info");
-      pushLog(`  FOUND : ${r.data.strings.length} strings`, "ok");
+      pushLog(`  FOUND : ${r.data.found_total} strings in ROM`, "info");
+      pushLog(`  LOAD  : ${r.data.strings.length} strings (limit ${maxStrings})`, "ok");
+      if (r.data.found_total > r.data.strings.length) {
+        pushLog(`  NOTE  : ${r.data.found_total - r.data.strings.length} more strings skipped — raise "Max Strings" to load more.`, "info");
+      }
       pushLog(`> READY. Choose target language and press TRANSLATE.`, "cmd");
       loadHistory();
     } catch (e) {
@@ -362,6 +368,23 @@ export default function RomTranslator() {
             </SelectContent>
           </Select>
 
+          <label className="font-mono text-[10px] uppercase text-neutral-500 tracking-wider mt-5 mb-2 block">Max Strings</label>
+          <Select value={String(maxStrings)} onValueChange={(v) => setMaxStrings(Number(v))}>
+            <SelectTrigger
+              className="h-11 bg-neutral-950 border-neutral-700 rounded-sm font-mono text-sm"
+              data-testid="max-strings-select"
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent className="bg-neutral-900 border-neutral-800 rounded-sm">
+              {[100, 250, 500, 1000, 2000, 5000].map((n) => (
+                <SelectItem key={n} value={String(n)} className="font-mono text-sm" data-testid={`max-strings-option-${n}`}>
+                  {n} strings {n >= 2000 && <span className="text-[#C7305C] ml-2">(slow · high LLM cost)</span>}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+
           <label className="font-mono text-[10px] uppercase text-neutral-500 tracking-wider mt-5 mb-2 block">Output Mode</label>
           <div className="grid grid-cols-2 gap-2">
             {MODES.map((m) => {
@@ -480,7 +503,8 @@ export default function RomTranslator() {
             <StatRow label="ROM Type" value={session?.rom_type || "—"} />
             <StatRow label="Size" value={session ? `${(session.rom_size / 1024).toFixed(1)} KB` : "—"} />
             <StatRow label="Encoding" value={session?.encoding || encoding} highlight={session?.encoding === "pokemon_gen3"} />
-            <StatRow label="Strings" value={session?.strings?.length ?? "—"} highlight />
+            <StatRow label="Found in ROM" value={session?.found_total ?? "—"} />
+            <StatRow label="Loaded" value={session?.strings?.length ?? "—"} highlight />
             <StatRow label="Target" value={targetLang.toUpperCase()} />
             <StatRow label="Mode" value={mode === "view" ? "VIEW" : "PATCH"} />
             <StatRow label="AI" value={<span className="inline-flex items-center gap-1"><Sparkles className="w-3 h-3" />{(aiSettings.provider || "emergent").toUpperCase()}</span>} />
