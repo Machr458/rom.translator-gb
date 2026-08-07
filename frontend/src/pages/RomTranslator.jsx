@@ -379,7 +379,7 @@ export default function RomTranslator() {
             <SelectContent className="bg-neutral-900 border-neutral-800 rounded-sm">
               {[100, 250, 500, 1000, 2000, 5000].map((n) => (
                 <SelectItem key={n} value={String(n)} className="font-mono text-sm" data-testid={`max-strings-option-${n}`}>
-                  {n} strings {n >= 2000 && <span className="text-[#C7305C] ml-2">(slow · high LLM cost)</span>}
+                  {n === 5000 ? "MAX (5000 strings)" : `${n} strings`} {n >= 2000 && <span className="text-[#C7305C] ml-2">(slow · high LLM cost)</span>}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -421,6 +421,27 @@ export default function RomTranslator() {
               <><Zap className="w-4 h-4" /> TRANSLATE</>
             )}
           </button>
+
+          {session?.strings?.length > 0 && (() => {
+            const est = estimateCost(session.strings, aiSettings.provider, aiSettings.model || providers?.[aiSettings.provider]?.default, providers);
+            if (!est) return null;
+            const fmt = (v) => v < 0.001 ? "<$0.001" : v < 0.01 ? `$${v.toFixed(4)}` : `$${v.toFixed(3)}`;
+            return (
+              <div className="mt-3 border border-neutral-800 rounded-sm p-3 bg-neutral-950/70" data-testid="cost-estimate">
+                <div className="flex items-center justify-between font-mono text-[10px] uppercase text-neutral-500 tracking-widest mb-2">
+                  <span>Estimated cost</span>
+                  <span className="text-[#9BBC0F]">{fmt(est.total)}</span>
+                </div>
+                <div className="font-mono text-[10px] text-neutral-500 flex justify-between">
+                  <span>{est.count} strings · ~{Math.round((est.inTokens + est.outTokens) / 1000)}k tokens</span>
+                  <span>in {fmt(est.input)} + out {fmt(est.output)}</span>
+                </div>
+                <p className="font-mono text-[9px] text-neutral-600 mt-1.5">
+                  * Rough estimate based on provider list pricing. Emergent Universal Key deducts from your credit balance.
+                </p>
+              </div>
+            );
+          })()}
 
           {mode === "patch" && (
             <button
@@ -556,4 +577,30 @@ function StatRow({ label, value, highlight = false }) {
       <dd className={`${highlight ? "text-[#9BBC0F]" : "text-neutral-200"} font-semibold`}>{value}</dd>
     </div>
   );
+}
+
+/** Rough cost estimate for a translation run.
+ * Heuristic tokens: input ~ (avg_len * 1.2 + 25) per string (prompt + JSON overhead),
+ * output ~ avg_len * 1.4 (translation with some expansion). Both divided by 4 chars/token.
+ */
+export function estimateCost(strings, provider, modelId, providers) {
+  const p = providers?.[provider];
+  if (!p) return null;
+  const m = p.models.find((x) => x.id === modelId) || p.models.find((x) => x.id === p.default);
+  if (!m?.pricing) return null;
+  const count = strings.length;
+  if (!count) return { input: 0, output: 0, total: 0, count: 0 };
+  const avgLen = strings.reduce((s, x) => s + (x.text?.length || 20), 0) / count;
+  const inTokens = count * ((avgLen * 1.2) + 25) / 4;
+  const outTokens = count * (avgLen * 1.4) / 4;
+  const inCost = (inTokens / 1_000_000) * m.pricing.input;
+  const outCost = (outTokens / 1_000_000) * m.pricing.output;
+  return {
+    input: inCost,
+    output: outCost,
+    total: inCost + outCost,
+    count,
+    inTokens: Math.round(inTokens),
+    outTokens: Math.round(outTokens),
+  };
 }

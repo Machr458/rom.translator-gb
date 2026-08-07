@@ -37,15 +37,16 @@ EMERGENT_LLM_KEY = os.environ.get('EMERGENT_LLM_KEY')
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
 
 # Provider catalog with recommended models
+# pricing = {"input": USD per 1M input tokens, "output": USD per 1M output tokens}
 PROVIDERS = {
     "gemini": {
         "label": "Google Gemini",
         "keyHint": "AIza... (Google AI Studio) or your project key",
         "models": [
-            {"id": "gemini-3.1-pro-preview", "label": "Gemini 3.1 Pro (best quality)"},
-            {"id": "gemini-3-flash-preview", "label": "Gemini 3 Flash (fast, cheap)"},
-            {"id": "gemini-2.5-pro", "label": "Gemini 2.5 Pro"},
-            {"id": "gemini-2.5-flash", "label": "Gemini 2.5 Flash"},
+            {"id": "gemini-3.1-pro-preview", "label": "Gemini 3.1 Pro (best quality)", "pricing": {"input": 1.25, "output": 10.0}},
+            {"id": "gemini-3-flash-preview", "label": "Gemini 3 Flash (fast, cheap)", "pricing": {"input": 0.075, "output": 0.30}},
+            {"id": "gemini-2.5-pro", "label": "Gemini 2.5 Pro", "pricing": {"input": 1.25, "output": 10.0}},
+            {"id": "gemini-2.5-flash", "label": "Gemini 2.5 Flash", "pricing": {"input": 0.075, "output": 0.30}},
         ],
         "default": "gemini-3-flash-preview",
     },
@@ -53,10 +54,10 @@ PROVIDERS = {
         "label": "OpenAI",
         "keyHint": "sk-... from platform.openai.com",
         "models": [
-            {"id": "gpt-5.4", "label": "GPT-5.4 (recommended)"},
-            {"id": "gpt-5.4-mini", "label": "GPT-5.4 Mini (fast)"},
-            {"id": "gpt-5", "label": "GPT-5"},
-            {"id": "gpt-4o", "label": "GPT-4o"},
+            {"id": "gpt-5.4", "label": "GPT-5.4 (recommended)", "pricing": {"input": 1.25, "output": 10.0}},
+            {"id": "gpt-5.4-mini", "label": "GPT-5.4 Mini (fast)", "pricing": {"input": 0.15, "output": 0.60}},
+            {"id": "gpt-5", "label": "GPT-5", "pricing": {"input": 1.25, "output": 10.0}},
+            {"id": "gpt-4o", "label": "GPT-4o", "pricing": {"input": 2.50, "output": 10.0}},
         ],
         "default": "gpt-5.4-mini",
     },
@@ -64,9 +65,9 @@ PROVIDERS = {
         "label": "Anthropic Claude",
         "keyHint": "sk-ant-... from console.anthropic.com",
         "models": [
-            {"id": "claude-sonnet-5", "label": "Claude Sonnet 5 (best)"},
-            {"id": "claude-sonnet-4-6", "label": "Claude Sonnet 4.6 (recommended)"},
-            {"id": "claude-haiku-4-5-20251001", "label": "Claude Haiku 4.5 (fast)"},
+            {"id": "claude-sonnet-5", "label": "Claude Sonnet 5 (best)", "pricing": {"input": 3.0, "output": 15.0}},
+            {"id": "claude-sonnet-4-6", "label": "Claude Sonnet 4.6 (recommended)", "pricing": {"input": 3.0, "output": 15.0}},
+            {"id": "claude-haiku-4-5-20251001", "label": "Claude Haiku 4.5 (fast)", "pricing": {"input": 0.80, "output": 4.0}},
         ],
         "default": "claude-sonnet-4-6",
     },
@@ -74,10 +75,10 @@ PROVIDERS = {
         "label": "Emergent Universal Key (server default)",
         "keyHint": "No key needed — uses server-side credits",
         "models": [
-            {"id": "gemini-3-flash-preview", "label": "Gemini 3 Flash (via Emergent)"},
-            {"id": "gemini-3.1-pro-preview", "label": "Gemini 3.1 Pro (via Emergent)"},
-            {"id": "gpt-5.4-mini", "label": "GPT-5.4 Mini (via Emergent)"},
-            {"id": "claude-sonnet-4-6", "label": "Claude Sonnet 4.6 (via Emergent)"},
+            {"id": "gemini-3-flash-preview", "label": "Gemini 3 Flash (via Emergent)", "pricing": {"input": 0.10, "output": 0.40}},
+            {"id": "gemini-3.1-pro-preview", "label": "Gemini 3.1 Pro (via Emergent)", "pricing": {"input": 1.30, "output": 10.5}},
+            {"id": "gpt-5.4-mini", "label": "GPT-5.4 Mini (via Emergent)", "pricing": {"input": 0.20, "output": 0.70}},
+            {"id": "claude-sonnet-4-6", "label": "Claude Sonnet 4.6 (via Emergent)", "pricing": {"input": 3.10, "output": 15.5}},
         ],
         "default": "gemini-3-flash-preview",
     },
