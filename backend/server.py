@@ -907,39 +907,69 @@ async def import_translations(
 ):
     """Upload a TXT file with edited translations and patch the ROM in place.
     Returns the patched ROM binary as a download.
+
+    Accepts multiple encodings (UTF-8, UTF-16 with BOM, Windows-1250) and
+    multiple field separators: TAB, `->`, `=`, or a run of 2+ spaces.
     """
     p = rom_path(session_id)
     if not p.exists():
         raise HTTPException(status_code=404, detail="Session not found — the ROM must first be scanned via /api/rom/extract")
 
-    raw = (await file.read()).decode("utf-8", errors="replace")
+    raw_bytes = await file.read()
 
-    # Parse: skip comments (#) and empty lines; split on FIRST tab
-    pairs = []  # (original, translated)
+    # Decode: try UTF-16 BOM first (Notepad "Save As Unicode"), then UTF-8, then Windows-1250
+    if raw_bytes.startswith(b"\xff\xfe") or raw_bytes.startswith(b"\xfe\xff"):
+        raw = raw_bytes.decode("utf-16", errors="replace")
+    else:
+        try:
+            raw = raw_bytes.decode("utf-8")
+        except UnicodeDecodeError:
+            try:
+                raw = raw_bytes.decode("windows-1250")
+            except UnicodeDecodeError:
+                raw = raw_bytes.decode("latin-1", errors="replace")
+    # Strip UTF-8 BOM if present
+    raw = raw.lstrip("\ufeff")
+
+    # Parse: skip comments (#) and empty lines
+    # Try separators in order: TAB, then ' -> ', ' = ', or run of 2+ spaces
+    _sep_re = re.compile(r"\t| -> | = |  +")
+    pairs = []
+    unparseable = []
     for line in raw.splitlines():
-        s = line.strip()
-        if not s or s.startswith("#"):
+        s = line.rstrip("\r\n")
+        if not s.strip() or s.lstrip().startswith("#"):
             continue
-        if "\t" not in s:
+        m = _sep_re.search(s)
+        if not m:
+            unparseable.append(s[:80])
             continue
-        orig, _, tran = s.partition("\t")
-        pairs.append((orig.strip("\r\n"), tran.strip("\r\n")))
+        orig = s[:m.start()].rstrip()
+        tran = s[m.end():].lstrip()
+        pairs.append((orig, tran))
 
     if not pairs:
-        raise HTTPException(status_code=400, detail="No translation lines found in the uploaded file")
+        sample = " | ".join(unparseable[:3]) if unparseable else "no non-comment lines"
+        raise HTTPException(
+            status_code=400,
+            detail=(f"No translation lines found. Expected format: <original><TAB><translated> "
+                    f"(or original -> translated / original = translated). Sample of ignored lines: {sample}"),
+        )
 
     # Load ROM & encoding
     sess = await db.rom_sessions.find_one({"session_id": session_id}, {"_id": 0})
     enc = (sess or {}).get("encoding", "ascii")
     data = bytearray(p.read_bytes())
 
-    # Rebuild the extraction to get canonical offset mapping
-    strings = extract_strings_from_bytes(bytes(data), encoding=enc)
+    # Rebuild the extraction to get canonical offset mapping (using the ROM's encoding)
+    strings = extract_strings_from_bytes(bytes(data), encoding=enc, max_strings=HARD_MAX_STRINGS)
     text_to_meta = {s.text: (s.offset, s.length) for s in strings}
 
     patched = 0
     missed = 0
     for orig, tran in pairs:
+        if not tran:  # empty translation -> skip (user hasn't filled it in)
+            continue
         meta = text_to_meta.get(orig)
         if not meta:
             missed += 1
@@ -948,11 +978,11 @@ async def import_translations(
         if enc == "pokemon_gen3":
             payload = encode_pokemon_gen3(tran, length)
         else:
-            raw_bytes = tran.encode("ascii", errors="replace")
-            if len(raw_bytes) > length:
-                payload = raw_bytes[:length]
+            raw_b = tran.encode("ascii", errors="replace")
+            if len(raw_b) > length:
+                payload = raw_b[:length]
             else:
-                payload = raw_bytes + b" " * (length - len(raw_bytes))
+                payload = raw_b + b" " * (length - len(raw_b))
         data[offset:offset + length] = payload
         patched += 1
 
@@ -967,6 +997,7 @@ async def import_translations(
             "Content-Disposition": f'attachment; filename="{out_name}"',
             "X-Patched-Count": str(patched),
             "X-Missed-Count": str(missed),
+            "X-Total-Lines": str(len(pairs)),
         },
     )
 
