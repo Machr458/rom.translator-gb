@@ -5,6 +5,8 @@ Currently supported:
 - pokemon_gen3: Pokemon Ruby/Sapphire/Emerald/FireRed/LeafGreen custom encoding
 """
 
+import re
+
 # ---------- Pokemon Gen 3 (Emerald/Ruby/Sapphire/FRLG) ----------
 # Reference: https://bulbapedia.bulbagarden.net/wiki/Character_encoding_in_Generation_III
 
@@ -65,6 +67,14 @@ def extract_pokemon_gen3_runs(data: bytes, min_length: int = 8, max_results: int
     valid Gen3 characters (letters, digits, punctuation, space=0x00). The run
     ends at any Gen3 control byte (0xFA/0xFB/0xFC/0xFD/0xFE/0xFF) or an invalid
     byte. The length reported is bytes (== characters in Gen3).
+
+    Filters aggressively to reduce false positives on the ROM's data sections:
+    - Must start with a letter
+    - Must be terminated by a Gen 3 control byte
+    - >= min_length chars total
+    - >= 50% letters
+    - <= 60% spaces
+    - No single character repeating >= 5 times (rejects padding like "AAAAA")
     """
     results = []
     seen = set()
@@ -78,16 +88,20 @@ def extract_pokemon_gen3_runs(data: bytes, min_length: int = 8, max_results: int
                 chars.append(POKEMON_GEN3_CHARMAP[data[i]])
                 i += 1
             length = i - start
-            # Must be terminated by a control byte
             if i < n and data[i] in GEN3_CONTROL_BYTES and length >= min_length:
                 text = "".join(chars).rstrip()
-                if len(text) < min_length:
+                L = len(text)
+                if L < min_length:
                     i += 1
                     continue
                 letters = sum(1 for c in text if c.isalpha())
                 spaces = sum(1 for c in text if c == " ")
-                # Reject padding-heavy runs (mostly 0x00 with just one letter)
-                if letters < 3 or spaces > len(text) * 0.7:
+                # Reject: too few letters (<50%), too many spaces (>60%), or long single-char runs
+                if letters < L * 0.5 or spaces > L * 0.6:
+                    i += 1
+                    continue
+                # Reject long runs of the same character (padding / bitmap fragments)
+                if re.search(r"(.)\1{4,}", text):
                     i += 1
                     continue
                 key = text.lower()
@@ -97,7 +111,6 @@ def extract_pokemon_gen3_runs(data: bytes, min_length: int = 8, max_results: int
                     if len(results) >= max_results:
                         break
             else:
-                # not a valid run; move past first byte only to allow re-scan
                 i = start + 1
         else:
             i += 1
@@ -105,29 +118,32 @@ def extract_pokemon_gen3_runs(data: bytes, min_length: int = 8, max_results: int
 
 
 def count_pokemon_gen3_runs(data: bytes, min_length: int = 5) -> int:
-    """Count total unique Gen3 text runs (for user info)."""
-    seen = set()
-    i = 0
-    n = len(data)
-    while i < n:
-        if _is_gen3_letter(data[i]):
-            start = i
-            chars = []
-            while i < n and _is_gen3_char(data[i]):
-                chars.append(POKEMON_GEN3_CHARMAP[data[i]])
-                i += 1
-            length = i - start
-            if i < n and data[i] in GEN3_CONTROL_BYTES and length >= min_length:
-                text = "".join(chars).rstrip()
-                letters = sum(1 for c in text if c.isalpha())
-                spaces = sum(1 for c in text if c == " ")
-                if len(text) >= min_length and letters >= 3 and spaces <= len(text) * 0.7:
-                    seen.add(text.lower())
-            else:
-                i = start + 1
-        else:
-            i += 1
-    return len(seen)
+    """Count total unique Gen3 text runs after filtering (for user info)."""
+    return len(extract_pokemon_gen3_runs(data, min_length=min_length, max_results=10_000_000))
+
+
+def analyze_pokemon_gen3(data: bytes) -> dict:
+    """Diagnostic stats about Gen 3 coverage in the ROM.
+    Returns counts by length bucket + total bytes matched vs total bytes."""
+    all_runs = extract_pokemon_gen3_runs(data, min_length=1, max_results=10_000_000)
+    matched_bytes = sum(l for _, l, _ in all_runs)
+    buckets = {"1-3": 0, "4-7": 0, "8-15": 0, "16-30": 0, "31-60": 0, "61-120": 0, "121+": 0}
+    for _, _, text in all_runs:
+        n = len(text)
+        if n <= 3: buckets["1-3"] += 1
+        elif n <= 7: buckets["4-7"] += 1
+        elif n <= 15: buckets["8-15"] += 1
+        elif n <= 30: buckets["16-30"] += 1
+        elif n <= 60: buckets["31-60"] += 1
+        elif n <= 120: buckets["61-120"] += 1
+        else: buckets["121+"] += 1
+    return {
+        "total_unique": len(all_runs),
+        "matched_bytes": matched_bytes,
+        "rom_size": len(data),
+        "coverage_pct": round(100 * matched_bytes / max(1, len(data)), 2),
+        "length_histogram": buckets,
+    }
 
 
 def encode_pokemon_gen3(text: str, target_length: int) -> bytes:

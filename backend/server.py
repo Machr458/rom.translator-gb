@@ -23,6 +23,7 @@ from charmaps import (
     encode_pokemon_gen3,
     detect_encoding,
     count_pokemon_gen3_runs,
+    analyze_pokemon_gen3,
 )
 
 
@@ -376,6 +377,30 @@ async def test_ai_key(req: TestKeyRequest):
             "model": req.model or PROVIDERS.get(req.provider, {}).get("default"),
             "key_source": key_source,
             "key_masked": masked,
+        }
+
+
+@api_router.get("/rom/{session_id}/analyze")
+async def analyze_rom(session_id: str):
+    """Diagnostic info: how many Gen3-encoded strings the ROM contains, by length bucket,
+    plus how much of the ROM matches Gen3 patterns. Helps user judge extraction coverage."""
+    p = rom_path(session_id)
+    if not p.exists():
+        raise HTTPException(status_code=404, detail="Session not found")
+    sess = await db.rom_sessions.find_one({"session_id": session_id}, {"_id": 0})
+    enc = (sess or {}).get("encoding", "ascii")
+    data = p.read_bytes()
+    if enc == "pokemon_gen3":
+        stats = analyze_pokemon_gen3(data)
+        stats["encoding"] = enc
+        return stats
+    else:
+        # ASCII scan: just report total unique printable strings
+        n = len(extract_ascii_from_bytes(data, HARD_MAX_STRINGS))
+        return {
+            "encoding": enc,
+            "total_unique": n,
+            "rom_size": len(data),
         }
 
 
