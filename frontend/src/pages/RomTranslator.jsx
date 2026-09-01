@@ -42,6 +42,7 @@ export default function RomTranslator() {
   const [providers, setProviders] = useState({});
   const [encodings, setEncodings] = useState([]);
   const [encoding, setEncoding] = useState("auto");
+  const [scanMode, setScanMode] = useState("bytewise");
   const [maxStrings, setMaxStrings] = useState(500);
   const [batchSize, setBatchSize] = useState(60);
   const [aiSettings, setAiSettings] = useState(loadSettings());
@@ -119,6 +120,7 @@ export default function RomTranslator() {
       fd.append("file", file);
       fd.append("encoding", encoding);
       fd.append("max_strings", String(maxStrings));
+      fd.append("scan_mode", scanMode);
       const r = await axios.post(`${API}/rom/extract`, fd, {
         headers: { "Content-Type": "multipart/form-data" },
         timeout: 180000, // 3 min upper bound for very large ROMs
@@ -458,6 +460,27 @@ export default function RomTranslator() {
                   {e.label}
                 </SelectItem>
               ))}
+            </SelectContent>
+          </Select>
+
+          <label className="font-mono text-[10px] uppercase text-neutral-500 tracking-wider mt-5 mb-2 block">
+            Scan Mode <span className="text-neutral-600 normal-case tracking-normal">— text detection strategy</span>
+          </label>
+          <Select value={scanMode} onValueChange={setScanMode}>
+            <SelectTrigger
+              className="h-11 bg-neutral-950 border-neutral-700 rounded-sm font-mono text-sm"
+              data-testid="scan-mode-select"
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent className="bg-neutral-900 border-neutral-800 rounded-sm">
+              <SelectItem value="bytewise" className="font-mono text-sm" data-testid="scan-mode-option-bytewise">
+                Bytewise scan (all text-looking runs)
+              </SelectItem>
+              <SelectItem value="pointers" className="font-mono text-sm" data-testid="scan-mode-option-pointers">
+                Pointer table (Pokemon Gen 3 · high precision)
+                <span className="text-[#9BBC0F] ml-2">recommended</span>
+              </SelectItem>
             </SelectContent>
           </Select>
 

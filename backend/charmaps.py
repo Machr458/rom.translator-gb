@@ -60,6 +60,70 @@ def _is_gen3_char(b: int) -> bool:
     return b in POKEMON_GEN3_CHARMAP
 
 
+def _extract_gen3_at(data: bytes, start: int, min_length: int, max_length: int = 250):
+    """Try to decode a Gen3 text starting at exact offset. Returns (length, text) or None."""
+    n = len(data)
+    if start >= n or start < 0:
+        return None
+    if not _is_gen3_letter(data[start]):
+        return None
+    chars = []
+    i = start
+    while i < n and _is_gen3_char(data[i]):
+        chars.append(POKEMON_GEN3_CHARMAP[data[i]])
+        i += 1
+        if i - start > max_length:
+            return None
+    length = i - start
+    if i >= n or data[i] not in GEN3_CONTROL_BYTES or length < min_length:
+        return None
+    text = "".join(chars).rstrip()
+    L = len(text)
+    if L < min_length:
+        return None
+    letters = sum(1 for c in text if c.isalpha())
+    spaces = sum(1 for c in text if c == " ")
+    if letters < L * 0.5 or spaces > L * 0.6:
+        return None
+    if re.search(r"(.)\1{4,}", text):
+        return None
+    return (length, text)
+
+
+def extract_pokemon_gen3_via_pointers(data: bytes, min_length: int = 5, max_results: int = 10000):
+    """High-precision Pokemon Gen 3 text extraction via GBA pointer table scan.
+
+    Scans every 4-byte-aligned position for GBA ROM pointers (high byte 0x08),
+    follows each valid pointer and tries to decode Gen 3 text at the target offset.
+    Because we only look at addresses that ROM code actually references, this
+    eliminates ~99% of false positives from raw byte scanning.
+    """
+    results = []
+    seen = set()
+    rom_size = len(data)
+    # Iterate 4-byte aligned. Skip GBA header region 0x00-0xC0 (metadata, not code pointers).
+    i = 0xC0
+    while i + 3 < rom_size:
+        # Pointer: 4-byte little-endian, high byte 0x08 (GBA ROM address space).
+        # For larger ROMs (up to 32MB) high byte can be 0x08 or 0x09.
+        b3 = data[i + 3]
+        if b3 == 0x08 or b3 == 0x09:
+            b0, b1, b2 = data[i], data[i + 1], data[i + 2]
+            offset_in_rom = b0 | (b1 << 8) | (b2 << 16) | ((b3 - 0x08) << 24)
+            if 0 <= offset_in_rom < rom_size:
+                r = _extract_gen3_at(data, offset_in_rom, min_length)
+                if r:
+                    length, text = r
+                    key = text.lower()
+                    if key not in seen:
+                        seen.add(key)
+                        results.append((offset_in_rom, length, text))
+                        if len(results) >= max_results:
+                            break
+        i += 4
+    return results
+
+
 def extract_pokemon_gen3_runs(data: bytes, min_length: int = 8, max_results: int = 200):
     """Return list of (offset, length, decoded_text) tuples for Pokemon Gen 3 text runs.
 

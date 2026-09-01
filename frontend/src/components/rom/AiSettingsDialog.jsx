@@ -16,7 +16,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { KeyRound, Sparkles, ShieldCheck, PlugZap, Loader2, CheckCircle2, XCircle } from "lucide-react";
+import { KeyRound, Sparkles, ShieldCheck, PlugZap, Loader2, CheckCircle2, XCircle, Trash2 } from "lucide-react";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -94,6 +94,29 @@ export default function AiSettingsDialog({ open, onOpenChange, providers, settin
       toast.error("Test selhal: " + msg);
     } finally {
       setTesting(false);
+    }
+  };
+
+  const [clearing, setClearing] = useState(false);
+  const [cacheStats, setCacheStats] = useState(null);
+
+  useEffect(() => {
+    if (!open) return;
+    axios.get(`${API}/cache/stats`).then((r) => setCacheStats(r.data)).catch(() => setCacheStats(null));
+  }, [open]);
+
+  const handleClearCache = async () => {
+    if (!window.confirm("Opravdu chceš smazat celou cache překladů? Následující překlad bude znovu volat AI.")) return;
+    setClearing(true);
+    try {
+      const r = await axios.post(`${API}/cache/clear`);
+      const n = r.data?.deleted ?? 0;
+      toast.success(`Cache vyčištěna — ${n} záznamů smazáno.`);
+      setCacheStats({ total: 0, per_language: [] });
+    } catch (e) {
+      toast.error("Chyba při čištění cache: " + (e.response?.data?.detail || e.message));
+    } finally {
+      setClearing(false);
     }
   };
 
@@ -221,6 +244,29 @@ export default function AiSettingsDialog({ open, onOpenChange, providers, settin
             )}
           </div>
         )}
+
+        {/* Translation cache management */}
+        <div className="mt-6 pt-4 border-t border-neutral-800" data-testid="cache-section">
+          <h3 className="font-mono text-[10px] uppercase text-neutral-500 tracking-widest mb-2">Translation Cache</h3>
+          <p className="font-mono text-[11px] text-neutral-400 mb-3">
+            Every translated string is cached in the database so re-running the same ROM is free.
+            {cacheStats && (
+              <> Currently stored: <span className="text-[#9BBC0F]">{cacheStats.total}</span> entries
+              {cacheStats.per_language?.length > 0 && (
+                <> ({cacheStats.per_language.map((p) => `${p.lang.toUpperCase()}: ${p.count}`).join(", ")})</>
+              )}.</>
+            )}
+          </p>
+          <button
+            onClick={handleClearCache}
+            disabled={clearing || !cacheStats?.total}
+            className="h-9 px-4 border border-[#C7305C]/60 hover:border-[#C7305C] text-[#C7305C] hover:bg-[#C7305C]/10 rounded-sm font-mono text-[11px] uppercase tracking-wider disabled:opacity-30 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
+            data-testid="clear-cache-btn"
+          >
+            {clearing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+            {clearing ? "Clearing..." : "Clear cache"}
+          </button>
+        </div>
       </DialogContent>
     </Dialog>
   );

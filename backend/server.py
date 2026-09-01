@@ -20,6 +20,7 @@ from json_repair import repair_json as _repair_json
 
 from charmaps import (
     extract_pokemon_gen3_runs,
+    extract_pokemon_gen3_via_pointers,
     encode_pokemon_gen3,
     detect_encoding,
     count_pokemon_gen3_runs,
@@ -284,23 +285,26 @@ def extract_ascii_from_bytes(data: bytes, max_strings: int) -> List[ExtractedStr
     return results
 
 
-def extract_gen3_from_bytes(data: bytes, max_strings: int) -> List[ExtractedString]:
+def extract_gen3_from_bytes(data: bytes, max_strings: int, scan_mode: str = "bytewise") -> List[ExtractedString]:
     # Lower min_length so we catch short dialogs like "Yes!", "OK.", names, menu items
-    runs = extract_pokemon_gen3_runs(data, min_length=5, max_results=max_strings)
+    if scan_mode == "pointers":
+        runs = extract_pokemon_gen3_via_pointers(data, min_length=4, max_results=max_strings)
+    else:
+        runs = extract_pokemon_gen3_runs(data, min_length=5, max_results=max_strings)
     return [
         ExtractedString(id=str(uuid.uuid4()), offset=off, length=length, text=text)
         for off, length, text in runs
     ]
 
 
-def extract_strings_from_bytes(data: bytes, encoding: str = "ascii", max_strings: int = DEFAULT_MAX_STRINGS) -> List[ExtractedString]:
+def extract_strings_from_bytes(data: bytes, encoding: str = "ascii", max_strings: int = DEFAULT_MAX_STRINGS, scan_mode: str = "bytewise") -> List[ExtractedString]:
     # 0 or negative means "no user cap" -> use HARD_MAX_STRINGS
     if max_strings <= 0:
         max_strings = HARD_MAX_STRINGS
     else:
         max_strings = min(max(max_strings, 10), HARD_MAX_STRINGS)
     if encoding == "pokemon_gen3":
-        return extract_gen3_from_bytes(data, max_strings)
+        return extract_gen3_from_bytes(data, max_strings, scan_mode)
     return extract_ascii_from_bytes(data, max_strings)
 
 
@@ -418,6 +422,7 @@ async def extract_rom(
     file: UploadFile = File(...),
     encoding: str = Form("auto"),
     max_strings: int = Form(DEFAULT_MAX_STRINGS),
+    scan_mode: str = Form("bytewise"),  # bytewise | pointers (Pokemon Gen 3 only)
 ):
     fn = file.filename or "rom.gb"
     if not fn.lower().endswith((".gb", ".gbc", ".gba")):
@@ -439,7 +444,7 @@ async def extract_rom(
     session_id = str(uuid.uuid4())
     rom_path(session_id).write_bytes(data)
 
-    strings = extract_strings_from_bytes(data, encoding=enc, max_strings=max_strings)
+    strings = extract_strings_from_bytes(data, encoding=enc, max_strings=max_strings, scan_mode=scan_mode)
     # If user asked for unlimited (max_strings<=0), we already have every string; skip the second pass
     if max_strings <= 0:
         found_total = len(strings)
@@ -455,6 +460,7 @@ async def extract_rom(
         "rom_size": len(data),
         "rom_type": rom_type,
         "encoding": enc,
+        "scan_mode": scan_mode,
         "string_count": len(strings),
         "found_total": found_total,
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -987,7 +993,7 @@ async def import_translations(
     data = bytearray(p.read_bytes())
 
     # Rebuild the extraction to get canonical offset mapping (using the ROM's encoding)
-    strings = extract_strings_from_bytes(bytes(data), encoding=enc, max_strings=HARD_MAX_STRINGS)
+    strings = extract_strings_from_bytes(bytes(data), encoding=enc, max_strings=HARD_MAX_STRINGS, scan_mode=(sess or {}).get("scan_mode", "bytewise"))
     text_to_meta = {s.text: (s.offset, s.length) for s in strings}
 
     patched = 0
@@ -1039,7 +1045,7 @@ async def patch_rom(req: PatchRequest):
     data = bytearray(p.read_bytes())
 
     # Re-extract to get canonical offset mapping using the same encoding
-    strings = extract_strings_from_bytes(bytes(data), encoding=enc)
+    strings = extract_strings_from_bytes(bytes(data), encoding=enc, scan_mode=(sess or {}).get("scan_mode", "bytewise"))
     text_to_meta = {s.text: (s.offset, s.length) for s in strings}
 
     patched = 0
