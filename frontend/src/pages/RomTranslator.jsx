@@ -28,6 +28,7 @@ import {
 import Terminal from "@/components/rom/Terminal";
 import TranslationTable from "@/components/rom/TranslationTable";
 import AiSettingsDialog, { loadSettings } from "@/components/rom/AiSettingsDialog";
+import { ClearCacheButton } from "@/components/rom/ClearCacheButton";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -348,6 +349,7 @@ export default function RomTranslator() {
             </div>
           </div>
           <div className="flex items-center gap-3">
+            <ClearCacheButton />
             <button
               onClick={() => setSettingsOpen(true)}
               className="h-9 px-3 border border-neutral-700 hover:border-[#8BAC0F] rounded-sm font-mono text-[11px] uppercase tracking-wider text-neutral-300 hover:text-[#9BBC0F] transition-colors flex items-center gap-2"
