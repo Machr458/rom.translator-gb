@@ -887,6 +887,26 @@ async def cache_stats():
     return {"total": total, "per_language": per_lang}
 
 
+class CacheEntryRequest(BaseModel):
+    source: str
+    translated: str
+    target_language: str
+
+
+@api_router.post("/cache/entry")
+async def cache_entry(req: CacheEntryRequest):
+    if not req.source or not req.translated.strip():
+        raise HTTPException(status_code=400, detail="source and translated are required")
+    await _cache_store_many([{
+        "key": _cache_key(req.source, req.target_language),
+        "source": req.source,
+        "translated": req.translated,
+        "target_lang": req.target_language,
+        "manual": True,
+    }])
+    return {"saved": True}
+
+
 @api_router.post("/cache/clear")
 async def cache_clear(target_language: Optional[str] = None):
     q = {"target_lang": target_language} if target_language else {}
@@ -1050,6 +1070,8 @@ async def patch_rom(req: PatchRequest):
 
     patched = 0
     for t in req.translations:
+        if not t.translated:
+            continue
         meta = text_to_meta.get(t.original)
         if not meta:
             continue

@@ -242,6 +242,21 @@ export default function RomTranslator() {
     }
   };
 
+  const handleEditTranslation = async (s, text) => {
+    setTranslations((prev) => {
+      const base = prev.length ? prev : session.strings.map((x) => ({ id: x.id, original: x.text, translated: "" }));
+      return base.map((t) => (t.id === s.id ? { ...t, translated: text } : t));
+    });
+    if (!text.trim()) return;
+    try {
+      await axios.post(`${API}/cache/entry`, { source: s.text, translated: text, target_language: targetLang });
+      toast.success("Překlad uložen (i do cache)");
+    } catch (e) {
+      toast.error("Uloženo jen lokálně, cache selhala: " + (e.response?.data?.detail || e.message));
+    }
+  };
+
+
   const downloadPatched = async () => {
     if (!session || !translations.length) return;
     pushLog(`> PATCH ROM :: writing ${translations.length} strings...`, "cmd");
@@ -730,6 +745,7 @@ export default function RomTranslator() {
           <TranslationTable
             strings={session?.strings || []}
             translations={translations}
+            onEdit={handleEditTranslation}
           />
         </section>
       </main>

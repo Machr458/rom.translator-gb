@@ -1,8 +1,9 @@
 import { useMemo, useState, useEffect } from "react";
+import { EditableCell } from "@/components/rom/EditableCell";
 
 const PAGE_SIZE = 200;
 
-export default function TranslationTable({ strings, translations }) {
+export default function TranslationTable({ strings, translations, onEdit }) {
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   const [query, setQuery] = useState("");
 
@@ -83,11 +84,12 @@ export default function TranslationTable({ strings, translations }) {
                     {s.text}
                   </td>
                   <td className="px-4 py-2 font-mono text-xs text-neutral-50 align-top break-all border-l border-neutral-800">
-                    {tr ? (
-                      <span className="text-[#9BBC0F]">{tr}</span>
-                    ) : (
-                      <span className="text-neutral-700">—</span>
-                    )}
+                    <EditableCell
+                      value={tr}
+                      maxLen={s.length}
+                      index={i}
+                      onSave={(text) => onEdit?.(s, text)}
+                    />
                   </td>
                 </tr>
               );

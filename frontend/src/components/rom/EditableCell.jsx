@@ -1,0 +1,59 @@
+import { useState } from "react";
+import { Pencil, Check, X } from "lucide-react";
+
+export const EditableCell = ({ value, maxLen, onSave, index }) => {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+
+  const start = () => { setDraft(value || ""); setEditing(true); };
+  const save = () => { onSave(draft); setEditing(false); };
+
+  if (!editing) {
+    return (
+      <div className="flex items-start gap-2 group">
+        <span className="flex-1" data-testid={`translated-text-${index}`}>
+          {value ? <span className="text-[#9BBC0F]">{value}</span> : <span className="text-neutral-700">—</span>}
+        </span>
+        <button
+          onClick={start}
+          className="shrink-0 p-1 rounded-sm text-neutral-600 hover:text-[#9BBC0F] hover:bg-neutral-800 transition-colors"
+          title="Upravit překlad"
+          data-testid={`edit-btn-${index}`}
+        >
+          <Pencil className="w-3.5 h-3.5" />
+        </button>
+      </div>
+    );
+  }
+
+  const over = maxLen && draft.length > maxLen;
+  return (
+    <div className="flex flex-col gap-1">
+      <textarea
+        autoFocus
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); save(); }
+          if (e.key === "Escape") setEditing(false);
+        }}
+        rows={2}
+        className="w-full bg-neutral-900 border border-[#8BAC0F] rounded-sm px-2 py-1 font-mono text-xs text-neutral-50 focus:outline-none resize-y"
+        data-testid={`edit-input-${index}`}
+      />
+      <div className="flex items-center justify-between gap-2">
+        <span className={`font-mono text-[10px] ${over ? "text-amber-400" : "text-neutral-500"}`} data-testid={`edit-len-${index}`}>
+          {draft.length} / {maxLen}{over ? " · bude zkráceno v ROM" : ""}
+        </span>
+        <div className="flex gap-1">
+          <button onClick={save} className="p-1 rounded-sm text-[#9BBC0F] hover:bg-neutral-800" title="Uložit (Enter)" data-testid={`edit-save-${index}`}>
+            <Check className="w-3.5 h-3.5" />
+          </button>
+          <button onClick={() => setEditing(false)} className="p-1 rounded-sm text-neutral-400 hover:bg-neutral-800" title="Zrušit (Esc)" data-testid={`edit-cancel-${index}`}>
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
