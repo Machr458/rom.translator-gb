@@ -26,7 +26,7 @@ from charmaps import (
     count_pokemon_gen3_runs,
     analyze_pokemon_gen3,
 )
-from text_extract import extract_texts, patch_payload, glossary_for, detect_gb_encoding, CODECS
+from text_extract import extract_texts, patch_payload, glossary_for, detect_gb_encoding, CODECS, TOKEN_LEGEND, required_tokens
 
 
 ROOT_DIR = Path(__file__).parent
@@ -547,8 +547,9 @@ def _build_translation_prompt(target_lang_name: str, strings: List[ExtractedStri
         f"Do NOT use any escape sequences.\n"
         f'6. Return STRICT RFC 8259 JSON only — a single JSON array of objects with exactly two keys: "id" and "translated". '
         f"No prose, no code fences, no markdown. Each object on its own line for readability is OK.\n"
-        f"7. Texts contain control tokens in curly braces, e.g. {{n}} new line, {{l}} scroll line, {{p}} new text box, "
-        f"{{PLAYER}}, {{RIVAL}}, {{STR1}}, {{POKE}}, {{FC:01:02}}. Copy every token EXACTLY (same spelling, braces). "
+        f"7. Texts contain game control tokens in curly braces, e.g. {{n}} new line, {{l}} scroll line, {{p}} new text box, "
+        f"{{PLAYER}}, {{RIVAL}}, {{STR1}}, {{FC:01:02}}. They are NOT words: never translate, rename, remove or add them. "
+        f"Every variable/command token (anything other than {{n}} {{l}} {{p}}) must appear in the translation exactly as many times as in the original. "
         f"You may move line-break tokens to re-wrap a sentence, but keep each line no longer than the longest line of the original. "
         f"Words in ALL CAPS are game terms/names — keep them unchanged.\n"
         f"{gloss_rule}\n"
@@ -721,6 +722,9 @@ async def _translate_batch(
         tr = by_id.get(s.id, s.text)
         allowed = _allowed_chars(encoding)
         tr = "".join(ch if 0x20 <= ord(ch) <= 0x7E or ch in allowed else "?" for ch in tr)
+        if required_tokens(tr) != required_tokens(s.text):
+            logging.warning(f"Token mismatch, keeping original: {s.text[:60]!r}")
+            tr = s.text
         results.append(TranslatedString(id=s.id, original=s.text, translated=tr))
     return results
 
@@ -997,6 +1001,10 @@ async def export_translations(req: PatchRequest):
         f"# Target language: {sess.get('target_language', '?')}",
         "# Format: <original>\\t<translated>   (edit the RIGHT column freely, keep the LEFT column exactly)",
         "# Lines starting with # are ignored on import.",
+        "#",
+        "# Control tokens in {curly braces} are game codes, NOT text. Keep them in your translation:",
+        *[f"#   {tok:<44} {desc}" for tok, desc in TOKEN_LEGEND],
+        "# You may move {n} {l} {p} to re-wrap a sentence; keep lines about as long as in the original.",
         "",
     ]
     for t in req.translations:

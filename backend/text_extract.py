@@ -155,10 +155,10 @@ GEN3 = Codec(_G3, _G3_TOK, end={0xFF}, fill=0xFF, letters=set(range(0xBB, 0xEF))
 _GB_BASE = {0x7F: " ", **{0x80 + i: chr(65 + i) for i in range(26)}, **{0xA0 + i: chr(97 + i) for i in range(26)},
             0x9A: "(", 0x9B: ")", 0x9C: ":", 0x9D: ";", 0x9E: "[", 0x9F: "]",
             0xE0: "'", 0xE3: "-", 0xE6: "?", 0xE7: "!", 0xE8: ".", 0xF1: "×", 0xF3: "/", 0xF4: ",",
-            0x72: "“", 0x73: "”", 0x75: "…", **{0xF6 + i: str(i) for i in range(10)}}
+            0x72: "“", 0x73: "”", 0x75: "…", **{0xF6 + i: str(i) for i in range(10)},
+            0x4A: "PKMN", 0x54: "POKé", 0x5B: "PC", 0x5C: "TM", 0x5D: "TRAINER", 0x5E: "ROCKET"}
 _GB_TOK = {0x4E: "next", 0x4F: "n", 0x51: "p", 0x55: "l", 0x4C: "scroll", 0x4B: "_cont",
-           0x4A: "PKMN", 0x52: "PLAYER", 0x53: "RIVAL", 0x54: "POKE", 0x56: "DOTS", 0x59: "TARGET",
-           0x5A: "USER", 0x5B: "PC", 0x5C: "TM", 0x5D: "TRAINER", 0x5E: "ROCKET", 0x5F: "DEXEND",
+           0x52: "PLAYER", 0x53: "RIVAL", 0x56: "DOTS", 0x59: "TARGET", 0x5A: "USER", 0x5F: "DEXEND",
            0xE1: "PK", 0xE2: "MN", 0xEF: "MALE", 0xF5: "FEMALE", 0xF0: "YEN", 0xF2: "DOT",
            0xEC: "ARROW2", 0xED: "ARROW", 0xEE: "DOWN"}
 GEN1 = Codec({**_GB_BASE, 0x70: "‘", 0x71: "’", 0xBA: "é", 0xBB: "'d", 0xBC: "'l", 0xBD: "'s",
@@ -237,6 +237,27 @@ VOWELS = set("aeiouAEIOUéÉ")
 RARE = set("qxzjQXZJ")
 
 
+TOKEN_LEGEND = [
+    ("{n}", "new line inside the text box"),
+    ("{l}", "scroll: continue on the next line (text box scrolls up)"),
+    ("{p}", "new text box (waits for the A button)"),
+    ("{next}", "next line (Pokedex / menus)"),
+    ("{page}", "next Pokedex page"),
+    ("{PLAYER} / {RIVAL}", "player's / rival's name inserted by the game"),
+    ("{STR1} {STR2} {STR3}", "variable text inserted by the game (item, Pokemon, number...)"),
+    ("{KUN}", "honorific after the player's name (empty in English)"),
+    ("{TARGET} / {USER}", "battle: target / attacking Pokemon name"),
+    ("{FC:..} {FD:..} {F7:..} {F8:..} {F9:..}", "game commands (colors, pauses, sounds, button icons, variables)"),
+    ("{PK} {MN} {LV} {MALE} {FEMALE} {ARROW} {DOTS}", "special symbols"),
+]
+BREAK_SET = {"{n}", "{l}", "{p}", "{next}", "{page}", "{scroll}", "{_cont}", "{LF}", "{BSP}", "{WBR}"}
+
+
+def required_tokens(text: str):
+    """Non-layout tokens (variables/commands) that a translation must keep."""
+    return sorted(t for t in TOKEN_RE.findall(text) if t not in BREAK_SET)
+
+
 def plain_text(text: str) -> str:
     return TOKEN_RE.sub(" ", text).strip()
 
@@ -249,7 +270,7 @@ def _is_readable(text: str) -> bool:
     if re.search(r"(.)\1{3,}", p):
         return False
     v = sum(1 for ch in letters if ch in VOWELS) / len(letters)
-    if not 0.18 <= v <= 0.7:
+    if not 0.15 <= v <= 0.7:
         return False
     if sum(1 for ch in letters if ch in RARE) > max(1, len(letters) * 0.08):
         return False
@@ -267,7 +288,7 @@ def _is_readable(text: str) -> bool:
         return False
     if len(letters) < 6 and any(ch in RARE for ch in letters):
         return False
-    if len(words) == 1 and p.islower() and len(letters) < 5:
+    if len(words) == 1 and p.islower() and len(letters) < 5 and not re.search(r"[.!?…]$", p):
         return False
     lower_words = [w for w in words if any(ch.islower() for ch in w) and sum(ch.isalpha() for ch in w) >= 2]
     no_vowel = sum(1 for w in lower_words if not any(ch in VOWELS or ch in "yY" for ch in w))
