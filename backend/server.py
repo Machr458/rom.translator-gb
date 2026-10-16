@@ -246,6 +246,7 @@ UNLIMITED_SENTINEL = 0        # 0 or negative == "no user cap; use HARD_MAX_STRI
 DEFAULT_BATCH_SIZE = 60       # strings per single LLM call (bigger = fewer calls / cheaper / faster)
 MAX_BATCH_SIZE = 300          # upper limit to protect against output token truncation
 MAX_PARALLEL = 8              # parallel batch calls
+LLM_TIMEOUT = 150             # seconds per LLM call (thinking models answer slowly on big batches)
 PRINTABLE_RE = re.compile(rb"[\x20-\x7E]{%d,}" % MIN_STRING_LEN)
 
 
@@ -579,11 +580,11 @@ async def _call_llm(prompt: str, provider: str, model: Optional[str], api_key: O
         try:
             resp = await asyncio.wait_for(
                 asyncio.to_thread(client_.models.generate_content, model=model, contents=prompt),
-                timeout=60,
+                timeout=LLM_TIMEOUT,
             )
             return resp.text or ""
         except Exception as e:
-            raise HTTPException(status_code=502, detail=f"Gemini error: {str(e)[:300]}")
+            raise HTTPException(status_code=502, detail=f"Gemini error: {(str(e) or type(e).__name__)[:300]}")
 
     # --- OpenAI via official SDK ---
     if provider == "openai":
@@ -601,11 +602,11 @@ async def _call_llm(prompt: str, provider: str, model: Optional[str], api_key: O
                         {"role": "user", "content": prompt},
                     ],
                 ),
-                timeout=60,
+                timeout=LLM_TIMEOUT,
             )
             return resp.choices[0].message.content or ""
         except Exception as e:
-            raise HTTPException(status_code=502, detail=f"OpenAI error: {str(e)[:300]}")
+            raise HTTPException(status_code=502, detail=f"OpenAI error: {(str(e) or type(e).__name__)[:300]}")
 
     # --- Anthropic Claude via official SDK ---
     if provider == "anthropic":
@@ -622,12 +623,12 @@ async def _call_llm(prompt: str, provider: str, model: Optional[str], api_key: O
                     system="You are a precise game text translator that returns only JSON.",
                     messages=[{"role": "user", "content": prompt}],
                 ),
-                timeout=60,
+                timeout=LLM_TIMEOUT,
             )
             # concatenate text blocks
             return "".join(getattr(b, "text", "") for b in msg.content) or ""
         except Exception as e:
-            raise HTTPException(status_code=502, detail=f"Anthropic error: {str(e)[:300]}")
+            raise HTTPException(status_code=502, detail=f"Anthropic error: {(str(e) or type(e).__name__)[:300]}")
 
     # --- Emergent Universal Key via emergentintegrations ---
     if provider == "emergent":
@@ -653,11 +654,11 @@ async def _call_llm(prompt: str, provider: str, model: Optional[str], api_key: O
         try:
             resp = await asyncio.wait_for(
                 chat.send_message(UserMessage(text=prompt)),
-                timeout=60,
+                timeout=LLM_TIMEOUT,
             )
             return resp if isinstance(resp, str) else str(resp)
         except Exception as e:
-            msg = str(e)
+            msg = str(e) or type(e).__name__
             # Detect the Emergent free-tier budget cap and surface a friendly message
             low = msg.lower()
             if "budget has been exceeded" in low or "max budget" in low:
@@ -693,6 +694,12 @@ async def _translate_batch(
         msg = str(e.detail).lower()
         is_quota = ("429" in msg or "resource_exhausted" in msg or "quota" in msg or "rate" in msg)
         is_upstream = e.status_code in (502, 503, 504)
+        if "timeout" in msg and len(batch) > 3 and _depth < 3:
+            mid = len(batch) // 2
+            logging.warning(f"LLM timeout at depth={_depth}, splitting batch of {len(batch)}")
+            left = await _translate_batch(target_lang_name, batch[:mid], provider, model, api_key, _depth + 1, encoding, names)
+            right = await _translate_batch(target_lang_name, batch[mid:], provider, model, api_key, _depth + 1, encoding, names)
+            return left + right
         if provider != "emergent" and EMERGENT_LLM_KEY and (is_quota or is_upstream):
             logging.warning(f"Primary {provider} failed ({e.detail[:120]}), falling back to Emergent")
             text = (await _call_llm(prompt, "emergent", None, None)).strip()
