@@ -22,7 +22,7 @@ class Codec:
         self.special = special
         self.plain_bytes = {b for b, c in chars.items() if re.fullmatch(r"[A-Za-z0-9 .,!?:;'’‘“”…\-é]+", c)}
         multi = sorted(((c, b) for b, c in chars.items()), key=lambda x: -len(x[0]))
-        self.enc_pairs = multi
+        self.enc_pairs = [(c, b) for c, b in multi if len(c) == 1 or c[0] == "'" or c == "POKé"]
         self.enc_single = {c: b for c, b in multi if len(c) == 1}
         self.token_bytes = {v: bytes([k]) for k, v in tokens.items()}
         self.token_bytes.update(token_bytes or {})
@@ -278,7 +278,7 @@ def _is_readable(text: str) -> bool:
         return False
     if len(TOKEN_RE.findall(text)) * 3 >= len(letters):
         return False
-    if re.search(r"[b-df-hj-np-tv-zB-DF-HJ-NP-TV-Z]{5,}", p):
+    if re.search(r"[b-df-hj-np-tv-xzB-DF-HJ-NP-TV-XZ]{6,}", p):
         return False
     words = [w for w in re.split(r"[\s\-/]+", p) if w]
     if any(sum(ch.isalpha() for ch in w) > 18 for w in words):
@@ -290,7 +290,9 @@ def _is_readable(text: str) -> bool:
         return False
     if len(words) == 1 and p.islower() and len(letters) < 5 and not re.search(r"[.!?…]$", p):
         return False
-    lower_words = [w for w in words if any(ch.islower() for ch in w) and sum(ch.isalpha() for ch in w) >= 2]
+    if all(sum(ch.isalpha() for ch in w) <= 2 for w in words):
+        return False
+    lower_words = [w for w in words if any(ch.islower() for ch in w) and sum(ch.isalpha() for ch in w) >= 3]
     no_vowel = sum(1 for w in lower_words if not any(ch in VOWELS or ch in "yY" for ch in w))
     if no_vowel > len(lower_words) // 5:
         return False

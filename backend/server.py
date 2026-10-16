@@ -310,7 +310,7 @@ def apply_translations(data: bytearray, encoding: str, occ: dict, pairs) -> int:
     """Write (original, translated) pairs into every occurrence of the original text."""
     patched = 0
     for orig, tran in pairs:
-        if not tran or orig not in occ:
+        if not tran or tran.strip() == orig.strip() or orig not in occ:
             continue
         for off, length in occ[orig]:
             term = data[off + length] if off + length < len(data) else 0
@@ -1000,6 +1000,7 @@ async def export_translations(req: PatchRequest):
         f"# Encoding: {sess.get('encoding', 'ascii')}",
         f"# Target language: {sess.get('target_language', '?')}",
         "# Format: <original>\\t<translated>   (edit the RIGHT column freely, keep the LEFT column exactly)",
+        "# Untranslated lines are pre-filled with the original text; lines left unchanged are skipped on import.",
         "# Lines starting with # are ignored on import.",
         "#",
         "# Control tokens in {curly braces} are game codes, NOT text. Keep them in your translation:",
@@ -1010,7 +1011,7 @@ async def export_translations(req: PatchRequest):
     for t in req.translations:
         # Sanitize tabs and newlines in each field
         orig = t.original.replace("\t", " ").replace("\r", " ").replace("\n", " ")
-        tran = t.translated.replace("\t", " ").replace("\r", " ").replace("\n", " ")
+        tran = (t.translated or t.original).replace("\t", " ").replace("\r", " ").replace("\n", " ")
         lines.append(f"{orig}\t{tran}")
 
     content = "\n".join(lines) + "\n"
