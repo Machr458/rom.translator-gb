@@ -26,6 +26,7 @@ from charmaps import (
     count_pokemon_gen3_runs,
     analyze_pokemon_gen3,
 )
+from text_extract import extract_texts, patch_payload, glossary_for, detect_gb_encoding, CODECS
 
 
 ROOT_DIR = Path(__file__).parent
@@ -188,6 +189,7 @@ class ExtractResponse(BaseModel):
     rom_type: str
     encoding: str
     found_total: int
+    excluded_names: int = 0
     strings: List[ExtractedString]
 
 class TranslateRequest(BaseModel):
@@ -295,6 +297,27 @@ def extract_gen3_from_bytes(data: bytes, max_strings: int, scan_mode: str = "byt
         ExtractedString(id=str(uuid.uuid4()), offset=off, length=length, text=text)
         for off, length, text in runs
     ]
+
+
+def extract_story(data: bytes, encoding: str, scan_mode: str = "bytewise"):
+    """Story/dialog strings (names filtered out) + names glossary + all occurrences."""
+    story, names, occ = extract_texts(data, encoding, scan_mode)
+    strings = [ExtractedString(id=str(uuid.uuid4()), offset=o, length=l, text=t) for o, l, t in story[:HARD_MAX_STRINGS]]
+    return strings, names, occ
+
+
+def apply_translations(data: bytearray, encoding: str, occ: dict, pairs) -> int:
+    """Write (original, translated) pairs into every occurrence of the original text."""
+    patched = 0
+    for orig, tran in pairs:
+        if not tran or orig not in occ:
+            continue
+        for off, length in occ[orig]:
+            term = data[off + length] if off + length < len(data) else 0
+            payload = patch_payload(encoding, tran, length, term)
+            data[off:off + len(payload)] = payload
+        patched += 1
+    return patched
 
 
 def extract_strings_from_bytes(data: bytes, encoding: str = "ascii", max_strings: int = DEFAULT_MAX_STRINGS, scan_mode: str = "bytewise") -> List[ExtractedString]:
@@ -413,6 +436,8 @@ async def get_encodings():
     return [
         {"id": "auto", "label": "Auto-detect (recommended)"},
         {"id": "ascii", "label": "ASCII (homebrew, dev ROMs)"},
+        {"id": "pokemon_gen1", "label": "Pokemon Gen 1 (Red / Blue / Yellow)"},
+        {"id": "pokemon_gen2", "label": "Pokemon Gen 2 (Gold / Silver / Crystal)"},
         {"id": "pokemon_gen3", "label": "Pokemon Gen 3 (Emerald / Ruby / Sapphire / FRLG)"},
     ]
 
@@ -421,7 +446,7 @@ async def get_encodings():
 async def extract_rom(
     file: UploadFile = File(...),
     encoding: str = Form("auto"),
-    max_strings: int = Form(DEFAULT_MAX_STRINGS),
+    max_strings: int = Form(0),
     scan_mode: str = Form("bytewise"),  # bytewise | pointers (Pokemon Gen 3 only)
 ):
     fn = file.filename or "rom.gb"
@@ -437,21 +462,21 @@ async def extract_rom(
     # Resolve encoding: auto-detect if requested
     enc = encoding
     if enc == "auto":
-        enc = detect_encoding(data, fn)
-    if enc not in {"ascii", "pokemon_gen3"}:
+        enc = detect_gb_encoding(data, fn) or detect_encoding(data, fn)
+    if enc not in {"ascii", "pokemon_gen1", "pokemon_gen2", "pokemon_gen3"}:
         raise HTTPException(status_code=400, detail=f"Unknown encoding '{enc}'")
 
     session_id = str(uuid.uuid4())
     rom_path(session_id).write_bytes(data)
 
-    strings = extract_strings_from_bytes(data, encoding=enc, max_strings=max_strings, scan_mode=scan_mode)
-    # If user asked for unlimited (max_strings<=0), we already have every string; skip the second pass
-    if max_strings <= 0:
-        found_total = len(strings)
-    elif enc == "pokemon_gen3":
-        found_total = count_pokemon_gen3_runs(data, min_length=5)
-    else:
-        found_total = len(extract_ascii_from_bytes(data, HARD_MAX_STRINGS))
+    import asyncio
+    strings, names, _ = await asyncio.to_thread(extract_story, data, enc, scan_mode)
+    if max_strings > 0:
+        strings = strings[:max_strings]
+    found_total = len(strings)
+    await db.rom_glossaries.update_one(
+        {"session_id": session_id}, {"$set": {"session_id": session_id, "names": sorted(names)}}, upsert=True
+    )
     rom_type = detect_rom_type(fn, len(data))
 
     record = {
@@ -463,6 +488,7 @@ async def extract_rom(
         "scan_mode": scan_mode,
         "string_count": len(strings),
         "found_total": found_total,
+        "excluded_names": len(names),
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     await db.rom_sessions.insert_one(record)
@@ -474,11 +500,36 @@ async def extract_rom(
         rom_type=rom_type,
         encoding=enc,
         found_total=found_total,
+        excluded_names=len(names),
         strings=strings,
     )
 
 
-def _build_translation_prompt(target_lang_name: str, strings: List[ExtractedString]) -> str:
+EXTRA_CHARS = {
+    "pokemon_gen3": "á é í ó ú à è ì ò ù â ê î ô û ä ö ü ñ ç (and their uppercase forms)",
+    "pokemon_gen2": "é ä ö ü Ä Ö Ü",
+    "pokemon_gen1": "é",
+}
+
+
+def _allowed_chars(encoding: str) -> set:
+    c = CODECS.get(encoding)
+    return set(c.enc_single) if c else set()
+
+
+def _build_translation_prompt(target_lang_name: str, strings: List[ExtractedString], encoding: str = "ascii", glossary: Optional[list] = None) -> str:
+    extra = EXTRA_CHARS.get(encoding)
+    charset_rule = (
+        f"4. Only use printable ASCII characters plus these accented letters the game font supports: {extra}. "
+        f"Any other letter with diacritics must be written without it (e.g. č->c, ř->r, š->s, ž->z, ě->e, ů->u, ý->y).\n"
+        if extra else
+        "4. Only use printable ASCII characters (a-z, A-Z, 0-9, punctuation, space). No accents, no unicode — Gameboy fonts can't render them.\n"
+    )
+    gloss_rule = (
+        "8. These are proper names from the game (Pokemon, moves, items, places, characters). "
+        f"Keep them EXACTLY unchanged wherever they appear: {', '.join(glossary)}\n"
+        if glossary else ""
+    )
     lines = []
     for s in strings:
         lines.append(f'{{"id":"{s.id}","text":{json.dumps(s.text)}}}')
@@ -491,11 +542,16 @@ def _build_translation_prompt(target_lang_name: str, strings: List[ExtractedStri
         f"If the translation would be longer, abbreviate naturally to fit within the original length.\n"
         f"2. Preserve punctuation and any leading/trailing spaces exactly.\n"
         f"3. Do NOT translate obvious code identifiers, file names, register names, or gibberish (return them unchanged).\n"
-        f"4. Only use printable ASCII characters (a-z, A-Z, 0-9, punctuation, space). No accents, no unicode — Gameboy fonts can't render them.\n"
+        f"{charset_rule}"
         f'5. Do NOT include backslash (\\) in the translated text. If original has a backslash, replace it with "/". '
         f"Do NOT use any escape sequences.\n"
         f'6. Return STRICT RFC 8259 JSON only — a single JSON array of objects with exactly two keys: "id" and "translated". '
-        f"No prose, no code fences, no markdown. Each object on its own line for readability is OK.\n\n"
+        f"No prose, no code fences, no markdown. Each object on its own line for readability is OK.\n"
+        f"7. Texts contain control tokens in curly braces, e.g. {{n}} new line, {{l}} scroll line, {{p}} new text box, "
+        f"{{PLAYER}}, {{RIVAL}}, {{STR1}}, {{POKE}}, {{FC:01:02}}. Copy every token EXACTLY (same spelling, braces). "
+        f"You may move line-break tokens to re-wrap a sentence, but keep each line no longer than the longest line of the original. "
+        f"Words in ALL CAPS are game terms/names — keep them unchanged.\n"
+        f"{gloss_rule}\n"
         f"INPUT (one JSON object per line):\n{joined}\n\n"
         f"OUTPUT: JSON array only, well-formed."
     )
@@ -620,11 +676,14 @@ async def _translate_batch(
     model: Optional[str],
     api_key: Optional[str],
     _depth: int = 0,
+    encoding: str = "ascii",
+    names: Optional[set] = None,
 ) -> List[TranslatedString]:
     if not batch:
         return []
 
-    prompt = _build_translation_prompt(target_lang_name, batch)
+    glossary = glossary_for([s.text for s in batch], names or set())
+    prompt = _build_translation_prompt(target_lang_name, batch, encoding, glossary)
 
     # Try primary provider, auto-fallback to Emergent Universal Key on quota / upstream errors
     try:
@@ -651,8 +710,8 @@ async def _translate_batch(
         if len(batch) > 3 and _depth < 3:
             mid = len(batch) // 2
             logging.warning(f"Invalid JSON at depth={_depth}, splitting batch of {len(batch)} into {mid}+{len(batch)-mid}")
-            left = await _translate_batch(target_lang_name, batch[:mid], provider, model, api_key, _depth + 1)
-            right = await _translate_batch(target_lang_name, batch[mid:], provider, model, api_key, _depth + 1)
+            left = await _translate_batch(target_lang_name, batch[:mid], provider, model, api_key, _depth + 1, encoding, names)
+            right = await _translate_batch(target_lang_name, batch[mid:], provider, model, api_key, _depth + 1, encoding, names)
             return left + right
         raise HTTPException(status_code=502, detail="Translator returned invalid JSON")
 
@@ -660,7 +719,8 @@ async def _translate_batch(
     results = []
     for s in batch:
         tr = by_id.get(s.id, s.text)
-        tr = "".join(ch if 0x20 <= ord(ch) <= 0x7E else "?" for ch in tr)
+        allowed = _allowed_chars(encoding)
+        tr = "".join(ch if 0x20 <= ord(ch) <= 0x7E or ch in allowed else "?" for ch in tr)
         results.append(TranslatedString(id=s.id, original=s.text, translated=tr))
     return results
 
@@ -758,6 +818,11 @@ async def translate_rom_start(req: TranslateRequest):
         "model": req.model or PROVIDERS[provider]["default"],
     }
 
+    sess_doc = await db.rom_sessions.find_one({"session_id": req.session_id}, {"_id": 0, "encoding": 1})
+    gl_doc = await db.rom_glossaries.find_one({"session_id": req.session_id}, {"_id": 0, "names": 1})
+    job_encoding = (sess_doc or {}).get("encoding", "ascii")
+    job_names = set((gl_doc or {}).get("names", []))
+
     async def worker():
         # === CACHE LOOKUP: skip strings we've already translated ===
         cache_hits = await _cache_lookup({req.target_language: {s.text for s in req.strings}})
@@ -797,7 +862,7 @@ async def translate_rom_start(req: TranslateRequest):
                 failed = False
                 err_msg = None
                 try:
-                    out = await _translate_batch(lang_name, batch, provider, req.model, req.api_key)
+                    out = await _translate_batch(lang_name, batch, provider, req.model, req.api_key, 0, job_encoding, job_names)
                     real_translated = sum(1 for t, s in zip(out, batch) if t.translated != s.text)
                     JOBS[job_id]["translated_count"] += real_translated
                     # === CACHE STORE: persist successful translations ===
@@ -991,6 +1056,10 @@ async def import_translations(
         s = line.rstrip("\r\n")
         if not s.strip() or s.lstrip().startswith("#"):
             continue
+        if "\t" in s:
+            orig, tran = s.split("\t", 1)
+            pairs.append((orig, tran.strip()))
+            continue
         m = _sep_re.search(s)
         if not m:
             unparseable.append(s[:80])
@@ -1012,30 +1081,11 @@ async def import_translations(
     enc = (sess or {}).get("encoding", "ascii")
     data = bytearray(p.read_bytes())
 
-    # Rebuild the extraction to get canonical offset mapping (using the ROM's encoding)
-    strings = extract_strings_from_bytes(bytes(data), encoding=enc, max_strings=HARD_MAX_STRINGS, scan_mode=(sess or {}).get("scan_mode", "bytewise"))
-    text_to_meta = {s.text: (s.offset, s.length) for s in strings}
-
-    patched = 0
-    missed = 0
-    for orig, tran in pairs:
-        if not tran:  # empty translation -> skip (user hasn't filled it in)
-            continue
-        meta = text_to_meta.get(orig)
-        if not meta:
-            missed += 1
-            continue
-        offset, length = meta
-        if enc == "pokemon_gen3":
-            payload = encode_pokemon_gen3(tran, length)
-        else:
-            raw_b = tran.encode("ascii", errors="replace")
-            if len(raw_b) > length:
-                payload = raw_b[:length]
-            else:
-                payload = raw_b + b" " * (length - len(raw_b))
-        data[offset:offset + length] = payload
-        patched += 1
+    import asyncio
+    _, _, occ = await asyncio.to_thread(extract_story, bytes(data), enc, (sess or {}).get("scan_mode", "bytewise"))
+    filled = [(o, t) for o, t in pairs if t]
+    missed = sum(1 for o, _ in filled if o not in occ)
+    patched = apply_translations(data, enc, occ, filled)
 
     fn = (sess or {}).get("filename", "rom.gb")
     base, ext = os.path.splitext(fn)
@@ -1064,28 +1114,9 @@ async def patch_rom(req: PatchRequest):
 
     data = bytearray(p.read_bytes())
 
-    # Re-extract to get canonical offset mapping using the same encoding
-    strings = extract_strings_from_bytes(bytes(data), encoding=enc, scan_mode=(sess or {}).get("scan_mode", "bytewise"))
-    text_to_meta = {s.text: (s.offset, s.length) for s in strings}
-
-    patched = 0
-    for t in req.translations:
-        if not t.translated:
-            continue
-        meta = text_to_meta.get(t.original)
-        if not meta:
-            continue
-        offset, length = meta
-        if enc == "pokemon_gen3":
-            payload = encode_pokemon_gen3(t.translated, length)
-        else:
-            raw = t.translated.encode("ascii", errors="replace")
-            if len(raw) > length:
-                payload = raw[:length]
-            else:
-                payload = raw + b" " * (length - len(raw))
-        data[offset:offset + length] = payload
-        patched += 1
+    import asyncio
+    _, _, occ = await asyncio.to_thread(extract_story, bytes(data), enc, (sess or {}).get("scan_mode", "bytewise"))
+    patched = apply_translations(data, enc, occ, [(t.original, t.translated) for t in req.translations])
 
     fn = (sess or {}).get("filename", "rom.gb")
     base, ext = os.path.splitext(fn)

@@ -1,7 +1,15 @@
 import { useState } from "react";
 import { Pencil, Check, X } from "lucide-react";
 
-export const EditableCell = ({ value, maxLen, onSave, index }) => {
+const G3_TWO_BYTE = new Set(["PLAYER", "STR1", "STR2", "STR3", "KUN", "RIVAL", "VERSION", "AQUA", "MAGMA", "ARCHIE", "MAXIE", "KYOGRE", "GROUDON"]);
+
+const byteLength = (text, encoding) =>
+  text.replace(/\{([^{}]{1,16})\}/g, (_, t) => {
+    const n = t.includes(":") ? t.split(":").length : encoding === "pokemon_gen3" && G3_TWO_BYTE.has(t) ? 2 : 1;
+    return "#".repeat(n);
+  }).length;
+
+export const EditableCell = ({ value, maxLen, onSave, index, encoding }) => {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
 
@@ -26,7 +34,8 @@ export const EditableCell = ({ value, maxLen, onSave, index }) => {
     );
   }
 
-  const over = maxLen && draft.length > maxLen;
+  const used = byteLength(draft, encoding);
+  const over = maxLen && used > maxLen;
   return (
     <div className="flex flex-col gap-1">
       <textarea
@@ -43,7 +52,7 @@ export const EditableCell = ({ value, maxLen, onSave, index }) => {
       />
       <div className="flex items-center justify-between gap-2">
         <span className={`font-mono text-[10px] ${over ? "text-amber-400" : "text-neutral-500"}`} data-testid={`edit-len-${index}`}>
-          {draft.length} / {maxLen}{over ? " · bude zkráceno v ROM" : ""}
+          {used} / {maxLen} B{over ? " · bude zkráceno v ROM" : ""}
         </span>
         <div className="flex gap-1">
           <button onClick={save} className="p-1 rounded-sm text-[#9BBC0F] hover:bg-neutral-800" title="Uložit (Enter)" data-testid={`edit-save-${index}`}>

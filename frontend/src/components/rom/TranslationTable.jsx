@@ -3,7 +3,7 @@ import { EditableCell } from "@/components/rom/EditableCell";
 
 const PAGE_SIZE = 200;
 
-export default function TranslationTable({ strings, translations, onEdit }) {
+export default function TranslationTable({ strings, translations, onEdit, encoding }) {
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   const [query, setQuery] = useState("");
 
@@ -64,7 +64,7 @@ export default function TranslationTable({ strings, translations, onEdit }) {
           <thead className="sticky top-0 bg-neutral-900 border-b border-neutral-800">
             <tr>
               <th className="text-left px-4 py-2.5 font-mono text-[10px] uppercase text-neutral-500 tracking-widest w-16">Addr</th>
-              <th className="text-left px-4 py-2.5 font-mono text-[10px] uppercase text-neutral-500 tracking-widest">Original</th>
+              <th className="text-left px-4 py-2.5 font-mono text-[10px] uppercase text-neutral-500 tracking-widest w-[45%]">Original</th>
               <th className="text-left px-4 py-2.5 font-mono text-[10px] uppercase text-neutral-500 tracking-widest border-l border-neutral-800">Translated</th>
             </tr>
           </thead>
@@ -88,6 +88,7 @@ export default function TranslationTable({ strings, translations, onEdit }) {
                       value={tr}
                       maxLen={s.length}
                       index={i}
+                      encoding={encoding}
                       onSave={(text) => onEdit?.(s, text)}
                     />
                   </td>

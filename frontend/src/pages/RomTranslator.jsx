@@ -44,7 +44,6 @@ export default function RomTranslator() {
   const [encodings, setEncodings] = useState([]);
   const [encoding, setEncoding] = useState("auto");
   const [scanMode, setScanMode] = useState("bytewise");
-  const [maxStrings, setMaxStrings] = useState(500);
   const [batchSize, setBatchSize] = useState(60);
   const [aiSettings, setAiSettings] = useState(loadSettings());
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -120,7 +119,7 @@ export default function RomTranslator() {
       const fd = new FormData();
       fd.append("file", file);
       fd.append("encoding", encoding);
-      fd.append("max_strings", String(maxStrings));
+      fd.append("max_strings", "0");
       fd.append("scan_mode", scanMode);
       const r = await axios.post(`${API}/rom/extract`, fd, {
         headers: { "Content-Type": "multipart/form-data" },
@@ -138,17 +137,15 @@ export default function RomTranslator() {
       pushLog(`  SIZE  : ${(r.data.rom_size / 1024).toFixed(1)} KB`, "info");
       pushLog(`  ENC   : ${r.data.encoding}`, "info");
       pushLog(`  FOUND : ${r.data.found_total} strings in ROM`, "info");
-      pushLog(`  LOAD  : ${r.data.strings.length} strings (limit ${maxStrings})`, "ok");
-      if (r.data.found_total > r.data.strings.length) {
-        pushLog(`  NOTE  : ${r.data.found_total - r.data.strings.length} more strings skipped — raise "Max Strings" to load more.`, "info");
-      }
+      pushLog(`  LOAD  : ${r.data.strings.length} story / dialog strings`, "ok");
+      pushLog(`  SKIP  : ${r.data.excluded_names || 0} names (Pokemon, moves, items, places) kept original`, "info");
       pushLog(`> READY. Choose target language and press TRANSLATE.`, "cmd");
       loadHistory();
     } catch (e) {
       setStatus("error");
       const detail = e.response?.data?.detail || e.message || "Unknown error";
       pushLog(`! ERROR: ${detail}`, "err");
-      pushLog(`  Try lowering "Max Strings" or switching encoding.`, "err");
+      pushLog(`  Try switching encoding or scan mode.`, "err");
       toast.error(`Extraction failed: ${detail}`);
     }
   };
@@ -492,38 +489,12 @@ export default function RomTranslator() {
             </SelectTrigger>
             <SelectContent className="bg-neutral-900 border-neutral-800 rounded-sm">
               <SelectItem value="bytewise" className="font-mono text-sm" data-testid="scan-mode-option-bytewise">
-                Bytewise scan (all text-looking runs)
-              </SelectItem>
-              <SelectItem value="pointers" className="font-mono text-sm" data-testid="scan-mode-option-pointers">
-                Pointer table (Pokemon Gen 3 · high precision)
+                Full scan (story + descriptions)
                 <span className="text-[#9BBC0F] ml-2">recommended</span>
               </SelectItem>
-            </SelectContent>
-          </Select>
-
-          <label className="font-mono text-[10px] uppercase text-neutral-500 tracking-wider mt-5 mb-2 block">Max Strings</label>
-          <Select value={String(maxStrings)} onValueChange={(v) => setMaxStrings(Number(v))}>
-            <SelectTrigger
-              className="h-11 bg-neutral-950 border-neutral-700 rounded-sm font-mono text-sm"
-              data-testid="max-strings-select"
-            >
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent className="bg-neutral-900 border-neutral-800 rounded-sm">
-              {[100, 250, 500, 1000, 2000, 5000, 0].map((n) => (
-                <SelectItem key={n} value={String(n)} className="font-mono text-sm" data-testid={`max-strings-option-${n}`}>
-                  {n === 0
-                    ? "UNLIMITED (all strings)"
-                    : n === 5000
-                    ? "5000 strings"
-                    : `${n} strings`}
-                  {(n === 0 || n >= 2000) && (
-                    <span className="text-[#C7305C] ml-2">
-                      {n === 0 ? "(⚠ can be huge · high LLM cost)" : "(slow · high LLM cost)"}
-                    </span>
-                  )}
-                </SelectItem>
-              ))}
+              <SelectItem value="pointers" className="font-mono text-sm" data-testid="scan-mode-option-pointers">
+                Pointer table (GBA only · strictest, fewer texts)
+              </SelectItem>
             </SelectContent>
           </Select>
 
@@ -745,6 +716,7 @@ export default function RomTranslator() {
           <TranslationTable
             strings={session?.strings || []}
             translations={translations}
+            encoding={session?.encoding}
             onEdit={handleEditTranslation}
           />
         </section>
