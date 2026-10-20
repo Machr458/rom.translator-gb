@@ -63,7 +63,8 @@ install -m 0644 "$SOURCE_ROOT/deploy/raspberry-pi/rom-translator.nginx.conf" \
 
 nginx -t
 systemctl daemon-reload
-systemctl enable --now rom-translator.service
+systemctl enable rom-translator.service
+systemctl restart rom-translator.service
 systemctl reload nginx
 
 curl --fail --silent --show-error --retry 10 --retry-connrefused \

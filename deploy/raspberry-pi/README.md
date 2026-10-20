@@ -1,35 +1,83 @@
-# Raspberry Pi install
+# Instalace na Raspberry Pi
 
-The installer targets 64-bit Debian 12 on Raspberry Pi 3B. It keeps the existing Mainsail listener untouched, serves this app on port 8081, binds the API to localhost:8001, and stores SQLite data plus ROM files under `/var/lib/rom-translator`.
+Tento navod je pro Raspberry Pi 3B s 64bitovym Debianem 12. Aplikace pobezi na portu `8081`, Mainsail zustane beze zmeny. SQLite databaze a ulozene ROM budou v `/var/lib/rom-translator`.
 
-Build the frontend on the development computer so the Pi does not need Node.js:
+## Prvni instalace
 
-```sh
-REACT_APP_BACKEND_URL= yarn --cwd frontend build
+### 1. Priprav balicek na pocitaci
+
+Stahni soubor `rom-translator-pi.tar.gz` z projektu do pocitace. Pokud ho nemas pripraveny, sestav web v korenove slozce projektu:
+
+```powershell
+$env:REACT_APP_BACKEND_URL = ""
+yarn --cwd frontend build
 ```
 
-Copy the runtime source, build, and deployment files to the Pi. Do not copy `backend/.env` or any local database/session data:
+### 2. Posli soubor na Pi
 
-```sh
-rsync -av --exclude='.env' --exclude='rom_sessions/' --exclude='data/' --exclude='tests/' --exclude='__pycache__/' --exclude='.pytest_cache/' --exclude='requirements.txt' backend/ pi@192.168.0.120:/home/pi/rom-translator/backend/
-rsync -av frontend/build/ pi@192.168.0.120:/home/pi/rom-translator/frontend/build/
-rsync -av deploy/raspberry-pi/ pi@192.168.0.120:/home/pi/rom-translator/deploy/raspberry-pi/
+Otevri PowerShell na pocitaci. Pokud je soubor ve slozce Stazene soubory, spust:
+
+```powershell
+scp "$HOME\Downloads\rom-translator-pi.tar.gz" pi@192.168.0.120:/tmp/
 ```
 
-Then connect to the Pi and install:
+Pokud jsi ho ulozil primo na disk `C:`, pouzij misto toho:
 
-```sh
+```powershell
+scp C:\rom-translator-pi.tar.gz pi@192.168.0.120:/tmp/
+```
+
+Pri vyzve zadej heslo k Pi primo do terminalu. Pri psani se znaky nezobrazuji, to je normalni.
+
+### 3. Nainstaluj aplikaci
+
+Pripoj se k Pi:
+
+```powershell
 ssh pi@192.168.0.120
+```
+
+Az uvidis radek zacinajici `pi@`, zadej na Pi tyto prikazy:
+
+```bash
+tar -xzf /tmp/rom-translator-pi.tar.gz -C /home/pi
 cd /home/pi/rom-translator
 sudo bash deploy/raspberry-pi/install.sh
 ```
 
-Open `http://192.168.0.120:8081/` from a device on the same LAN. The app is not protected by login; do not forward port 8081 to the public internet. Enter a provider key in the app's settings. FreeTheAI works through the OpenAI-compatible provider; the Emergent provider is omitted because its SDK depends on a private wheel.
+Instalace muze trvat nekolik minut. Kdyz skonci, otevri na zarizeni ve stejne siti adresu:
 
-Useful service commands:
+```text
+http://192.168.0.120:8081/
+```
 
-```sh
+V nastaveni aplikace zadej API klic sveho poskytovatele AI. Aplikace nema vlastni prihlasovani; port `8081` nepresmerovavej z internetu.
+
+## Budouci aktualizace
+
+Pi samo zmeny z GitHubu nestahuje. Po zmene kodu je potreba pripravit novy soubor `rom-translator-pi.tar.gz` a zopakovat prenos a instalaci:
+
+1. Posli novy balicek z pocitace prikazem `scp` uvedenym vyse.
+2. Pripoj se pres SSH a spust:
+
+```bash
+tar -xzf /tmp/rom-translator-pi.tar.gz -C /home/pi
+cd /home/pi/rom-translator
+sudo bash deploy/raspberry-pi/install.sh
+```
+
+Instalator restartuje aplikaci. Databaze, cache prekladu a ulozene ROM zustanou zachovane v `/var/lib/rom-translator`.
+
+## Kdyz aplikace nebezi
+
+Na Pi zkontroluj stav sluzby:
+
+```bash
 sudo systemctl status rom-translator
-sudo journalctl -u rom-translator -f
-sudo systemctl restart rom-translator
+```
+
+Podrobnejsi chyby zobrazis:
+
+```bash
+sudo journalctl -u rom-translator -n 50 --no-pager
 ```
