@@ -75,6 +75,7 @@ agenthub/agents/youtube/db
 *.pack
 *.deb
 *.dylib
+!deploy/raspberry-pi/pi.tar.gz
 
 # Build caches
 .cache/
