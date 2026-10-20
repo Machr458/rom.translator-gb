@@ -243,6 +243,8 @@ class TestPromptRules:
         assert "backslash" in low
         assert "rfc 8259" in low or "well-formed" in low
         assert "escape" in low
+        assert "translate all-caps menu labels and instructions normally" in low
+        assert "words in all caps are game terms/names" not in low
 
 
 # ---------- HTTP status endpoint shape ----------

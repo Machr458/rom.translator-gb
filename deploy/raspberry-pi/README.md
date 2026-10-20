@@ -1,83 +1,67 @@
 # Instalace na Raspberry Pi
 
-Tento navod je pro Raspberry Pi 3B s 64bitovym Debianem 12. Aplikace pobezi na portu `8081`, Mainsail zustane beze zmeny. SQLite databaze a ulozene ROM budou v `/var/lib/rom-translator`.
+Navod je pro Raspberry Pi 3B s 64bitovym Debianem 12. Aplikace bezi na portu `8081`, Mainsail zustava beze zmeny. SQLite databaze a ROM jsou v `/var/lib/rom-translator`.
 
 ## Prvni instalace
 
-### 1. Priprav balicek na pocitaci
+V terminalu projektu sestav frontend a vytvor verzovany archiv:
 
-Stahni soubor `rom-translator-pi.tar.gz` z projektu do pocitace. Pokud ho nemas pripraveny, sestav web v korenove slozce projektu:
-
-```powershell
-$env:REACT_APP_BACKEND_URL = ""
-yarn --cwd frontend build
+```bash
+REACT_APP_BACKEND_URL= yarn --cwd frontend build
+bash deploy/raspberry-pi/package.sh install
 ```
 
-### 2. Posli soubor na Pi
+Skript vypise cestu k novemu souboru, napr. `deploy/raspberry-pi/rom-translator-install-v1.0-20261020-161500-1234.tar.gz`. Dodatkovy identifikator brani prepsani starsiho archivu.
 
-Otevri PowerShell na pocitaci. Pokud je soubor ve slozce Stazene soubory, spust:
-
-```powershell
-scp "$HOME\Downloads\rom-translator-pi.tar.gz" pi@192.168.0.120:/tmp/
-```
-
-Pokud jsi ho ulozil primo na disk `C:`, pouzij misto toho:
+Stahni vytvoreny archiv do pocitace. Pokud je v koreni disku C, posli ho na Pi z PowerShellu. Pouzij presne jmeno, ktere vypsal skript:
 
 ```powershell
-scp C:\rom-translator-pi.tar.gz pi@192.168.0.120:/tmp/
+scp C:\rom-translator-install-v1.0-20261020-161500-1234.tar.gz pi@192.168.0.120:/tmp/
 ```
 
-Pri vyzve zadej heslo k Pi primo do terminalu. Pri psani se znaky nezobrazuji, to je normalni.
-
-### 3. Nainstaluj aplikaci
-
-Pripoj se k Pi:
+Pripoj se k Pi a rozbal archiv. Ve vsech prikazech nahrad ukazkove jmeno skutecnym jmenem souboru:
 
 ```powershell
 ssh pi@192.168.0.120
 ```
 
-Az uvidis radek zacinajici `pi@`, zadej na Pi tyto prikazy:
+Pak v SSH terminalu na Pi:
 
 ```bash
-tar -xzf /tmp/rom-translator-pi.tar.gz -C /home/pi
+tar -xzf /tmp/rom-translator-install-v1.0-20261020-161500-1234.tar.gz -C /home/pi
 cd /home/pi/rom-translator
 sudo bash deploy/raspberry-pi/install.sh
 ```
 
-Instalace muze trvat nekolik minut. Kdyz skonci, otevri na zarizeni ve stejne siti adresu:
+Po instalaci otevri `http://192.168.0.120:8081/`. Aplikace nema vlastni prihlasovani; port `8081` nepresmerovavej z internetu.
 
-```text
-http://192.168.0.120:8081/
-```
+## Aktualizace
 
-V nastaveni aplikace zadej API klic sveho poskytovatele AI. Aplikace nema vlastni prihlasovani; port `8081` nepresmerovavej z internetu.
-
-## Budouci aktualizace
-
-Pi samo zmeny z GitHubu nestahuje. Po zmene kodu je potreba pripravit novy soubor `rom-translator-pi.tar.gz` a zopakovat prenos a instalaci:
-
-1. Posli novy balicek z pocitace prikazem `scp` uvedenym vyse.
-2. Pripoj se pres SSH a spust:
+Po zmene aplikace vytvor novy archiv z terminalu projektu:
 
 ```bash
-tar -xzf /tmp/rom-translator-pi.tar.gz -C /home/pi
+bash deploy/raspberry-pi/package.sh update
+```
+
+Skript vypise nove jedinecne jmeno, napr. `rom-translator-update-v1.0-20261020-161500-1234.tar.gz`. Prenes tento konkretni soubor stejne jako vyse:
+
+```powershell
+scp C:\rom-translator-update-v1.0-20261020-161500-1234.tar.gz pi@192.168.0.120:/tmp/
+```
+
+V SSH terminalu na Pi rozbal novy archiv a spust instalator:
+
+```bash
+tar -xzf /tmp/rom-translator-update-v1.0-20261020-161500-1234.tar.gz -C /home/pi
 cd /home/pi/rom-translator
 sudo bash deploy/raspberry-pi/install.sh
 ```
 
-Instalator restartuje aplikaci. Databaze, cache prekladu a ulozene ROM zustanou zachovane v `/var/lib/rom-translator`.
+Instalator aplikaci restartuje. Databaze, prekladova cache a ROM zustavaji zachovane v `/var/lib/rom-translator`.
 
-## Kdyz aplikace nebezi
-
-Na Pi zkontroluj stav sluzby:
+## Kontrola sluzby
 
 ```bash
 sudo systemctl status rom-translator
-```
-
-Podrobnejsi chyby zobrazis:
-
-```bash
 sudo journalctl -u rom-translator -n 50 --no-pager
 ```

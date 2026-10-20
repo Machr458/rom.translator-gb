@@ -35,10 +35,10 @@ export const ClearCacheButton = () => {
     setBusy(true);
     try {
       const r = await axios.post(`${API}/cache/clear`);
-      toast.success(`Cache smazána — ${r.data?.deleted ?? 0} záznamů odstraněno.`);
+      toast.success(`Cache cleared. ${r.data?.deleted ?? 0} entries removed.`);
       setOpen(false);
     } catch (e) {
-      toast.error("Chyba při mazání cache: " + (e.response?.data?.detail || e.message));
+      toast.error("Could not clear cache: " + (e.response?.data?.detail || e.message));
     } finally {
       setBusy(false);
     }
@@ -52,20 +52,20 @@ export const ClearCacheButton = () => {
         data-testid="header-clear-cache-btn"
       >
         <Trash2 className="w-3.5 h-3.5" />
-        <span className="hidden sm:inline">Smazat cache</span>
+        <span className="hidden sm:inline">Clear cache</span>
       </button>
       <AlertDialog open={open} onOpenChange={setOpen}>
         <AlertDialogContent className="bg-neutral-950 border-neutral-800 text-neutral-100" data-testid="clear-cache-dialog">
           <AlertDialogHeader>
-            <AlertDialogTitle>Smazat cache překladů?</AlertDialogTitle>
+            <AlertDialogTitle>Clear translation cache?</AlertDialogTitle>
             <AlertDialogDescription className="text-neutral-400" data-testid="clear-cache-count">
-              {total === null ? "Načítám..." : `Uloženo záznamů: ${total}. `}
-              Další překlad pak znovu zavolá AI (a bude stát kredity).
+              {total === null ? "Loading..." : `${total} entries are stored. `}
+              Future translations will call AI again.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel className="bg-transparent border-neutral-700 text-neutral-300" data-testid="clear-cache-cancel">
-              Zrušit
+              Cancel
             </AlertDialogCancel>
             <AlertDialogAction
               onClick={(e) => { e.preventDefault(); clear(); }}
@@ -73,7 +73,7 @@ export const ClearCacheButton = () => {
               className="bg-red-600 hover:bg-red-700 text-white"
               data-testid="clear-cache-confirm"
             >
-              {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : "Smazat"}
+              {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : "Clear cache"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

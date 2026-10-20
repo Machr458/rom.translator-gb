@@ -327,10 +327,7 @@ def _is_name(text: str, in_table: bool) -> bool:
     p = plain_text(text)
     if any(t in text for t in BREAK_TOKENS) or len(p) > 30:
         return False
-    if in_table:
-        return True
-    return (len(p.split()) == 1 and not any(ch.islower() for ch in p.replace("é", ""))
-            and not re.search(r"[!?]$", p))
+    return in_table
 
 
 def classify(cands):

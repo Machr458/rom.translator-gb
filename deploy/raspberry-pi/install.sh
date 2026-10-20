@@ -26,8 +26,11 @@ if [[ ! -f "$SOURCE_ROOT/frontend/build/index.html" ]]; then
 fi
 
 if ss -H -ltn 'sport = :8081' | grep -q .; then
-  echo "Port 8081 is already in use; no files were installed." >&2
-  exit 1
+  if ! systemctl is-active --quiet rom-translator.service || \
+    ! grep -Eq '^[[:space:]]*listen[[:space:]]+8081;' /etc/nginx/conf.d/rom-translator.conf 2>/dev/null; then
+    echo "Port 8081 is already in use by another service; no files were installed." >&2
+    exit 1
+  fi
 fi
 
 apt-get update

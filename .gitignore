@@ -54,6 +54,9 @@ venv/
 backend/data/
 backend/rom_sessions/
 deploy/raspberry-pi/rom-translator-pi.tar.gz
+deploy/raspberry-pi/rom-translator-update.tar.gz
+deploy/raspberry-pi/rom-translator-install-v*.tar.gz
+deploy/raspberry-pi/rom-translator-update-v*.tar.gz
 
 # Development tools
 chainlit.md

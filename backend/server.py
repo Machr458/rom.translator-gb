@@ -372,17 +372,17 @@ class SessionRecord(BaseModel):
 
 # ---------- ROM string extraction ----------
 LANGUAGE_NAMES = {
-    "cs": "Czech (Čeština)",
+    "cs": "Czech",
     "en": "English",
-    "de": "German (Deutsch)",
-    "es": "Spanish (Español)",
-    "fr": "French (Français)",
-    "pl": "Polish (Polski)",
-    "sk": "Slovak (Slovenčina)",
-    "it": "Italian (Italiano)",
+    "de": "German",
+    "es": "Spanish",
+    "fr": "French",
+    "pl": "Polish",
+    "sk": "Slovak",
+    "it": "Italian",
     "ja": "Japanese (日本語)",
-    "pt": "Portuguese (Português)",
-    "ru": "Russian (Русский)",
+    "pt": "Portuguese",
+    "ru": "Russian",
 }
 
 MIN_STRING_LEN = 4
@@ -743,7 +743,7 @@ def _build_translation_prompt(target_lang_name: str, strings: List[ExtractedStri
         f"{{PLAYER}}, {{RIVAL}}, {{STR1}}, {{FC:01:02}}. They are NOT words: never translate, rename, remove or add them. "
         f"Every variable/command token (anything other than {{n}} {{l}} {{p}}) must appear in the translation exactly as many times as in the original. "
         f"You may move line-break tokens to re-wrap a sentence, but keep each line no longer than the longest line of the original. "
-        f"Words in ALL CAPS are game terms/names — keep them unchanged. Protected name markers like {{KEEP0000}} must also remain exactly unchanged.\n"
+        f"Translate ALL-CAPS menu labels and instructions normally. Only leave game names unchanged when they are protected by a {{KEEP0000}} marker. Protected name markers must remain exactly unchanged.\n"
         f"{gloss_rule}\n"
         f"INPUT (one JSON object per line):\n{joined}\n\n"
         f"OUTPUT: JSON array only, well-formed."

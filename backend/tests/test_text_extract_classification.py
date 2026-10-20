@@ -3,6 +3,7 @@ import sys
 import asyncio
 import json
 import re
+import pytest
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -17,11 +18,22 @@ def test_all_caps_menu_phrase_is_translatable():
     assert "NEW GAME" not in names
 
 
-def test_single_word_pokemon_name_is_excluded():
-    story, names, _ = classify([(100, 8, "PIKACHU")])
+@pytest.mark.parametrize("label", ["START", "BAG", "FIGHT", "RUN", "OPTIONS", "CONTINUE"])
+def test_uppercase_menu_labels_are_translatable(label):
+    story, names, _ = classify([(100, len(label), label)])
+
+    assert [item[2] for item in story] == [label]
+    assert label not in names
+
+
+def test_single_word_pokemon_name_in_fixed_stride_table_is_excluded():
+    names_in_table = ("BULBASAUR", "IVYSAUR", "VENUSAUR", "CHARMANDER", "CHARMELEON", "CHARIZARD")
+    candidates = [(offset * 16, len(name), name) for offset, name in enumerate(names_in_table)]
+
+    story, names, _ = classify(candidates)
 
     assert story == []
-    assert "PIKACHU" in names
+    assert set(names_in_table) <= names
 
 
 def test_fixed_stride_name_table_does_not_crash():

@@ -34,7 +34,7 @@ export default function TranslationTable({ strings, translations, onEdit, encodi
   if (!strings.length) {
     return (
       <div className="p-8 text-center font-mono text-xs text-neutral-500" data-testid="empty-viewer">
-        // Load a ROM and press SCAN & EXTRACT to see strings here
+        Load a ROM and select SCAN & EXTRACT to see its strings here.
       </div>
     );
   }
@@ -102,7 +102,7 @@ export default function TranslationTable({ strings, translations, onEdit, encodi
       {remaining > 0 && (
         <div className="px-4 py-3 border-t border-neutral-800 flex items-center justify-between font-mono text-xs">
           <span className="text-neutral-500">
-            {remaining.toLocaleString()} more strings hidden — showing first {rowsToRender.length.toLocaleString()} for performance
+            {remaining.toLocaleString()} more strings hidden. Showing first {rowsToRender.length.toLocaleString()} for performance.
           </span>
           <div className="flex gap-2">
             <button

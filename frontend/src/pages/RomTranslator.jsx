@@ -4,12 +4,11 @@ import { toast } from "sonner";
 import {
   Gamepad2,
   Upload,
-  Languages,
   Download,
   FileArchive,
   Cpu,
   Zap,
-  History,
+  ChevronDown,
   Loader2,
   CheckCircle2,
   XCircle,
@@ -28,15 +27,9 @@ import {
 import Terminal from "@/components/rom/Terminal";
 import TranslationTable from "@/components/rom/TranslationTable";
 import AiSettingsDialog, { loadSettings, saveSettings } from "@/components/rom/AiSettingsDialog";
-import { ClearCacheButton } from "@/components/rom/ClearCacheButton";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || "";
 const API = `${BACKEND_URL}/api`;
-
-const MODES = [
-  { id: "export", label: "Export as Text", icon: FileText },
-  { id: "patch", label: "Generate Patched ROM", icon: Download },
-];
 
 export default function RomTranslator() {
   const [languages, setLanguages] = useState([]);
@@ -45,16 +38,13 @@ export default function RomTranslator() {
   const [encoding, setEncoding] = useState("auto");
   const [scanMode, setScanMode] = useState("bytewise");
   const [aiSettings, setAiSettings] = useState(loadSettings());
-  const [settingsOpen, setSettingsOpen] = useState(false);
   const [targetLang, setTargetLang] = useState("cs");
-  const [mode, setMode] = useState("export");
   const [file, setFile] = useState(null);
   const [session, setSession] = useState(null);
   const [translations, setTranslations] = useState([]);
   const [logs, setLogs] = useState([]);
   const [status, setStatus] = useState("idle");
   const [progress, setProgress] = useState(0);
-  const [history, setHistory] = useState([]);
   const [dragActive, setDragActive] = useState(false);
   const fileInput = useRef(null);
   const importInput = useRef(null);
@@ -68,8 +58,7 @@ export default function RomTranslator() {
     axios.get(`${API}/languages`).then((r) => setLanguages(r.data)).catch(() => { /* ignore */ });
     axios.get(`${API}/providers`).then((r) => setProviders(r.data)).catch(() => { /* ignore */ });
     axios.get(`${API}/encodings`).then((r) => setEncodings(r.data)).catch(() => { /* ignore */ });
-    loadHistory();
-    pushLog("SYSTEM READY. Insert cartridge to begin.", "sys");
+    pushLog("SYSTEM READY. Select a ROM to begin.", "sys");
   }, [pushLog]);
 
   useEffect(() => {
@@ -89,13 +78,6 @@ export default function RomTranslator() {
     if (pollRef.current) clearInterval(pollRef.current);
   }, []);
 
-  const loadHistory = async () => {
-    try {
-      const r = await axios.get(`${API}/history`);
-      setHistory(r.data);
-    } catch (_) { /* ignore */ }
-  };
-
   const providerLabel = () => {
     const p = providers?.[aiSettings.provider];
     const modelId = aiSettings.model || p?.default || "";
@@ -106,12 +88,14 @@ export default function RomTranslator() {
     if (!f) return;
     const name = f.name.toLowerCase();
     if (!name.endsWith(".gb") && !name.endsWith(".gbc") && !name.endsWith(".gba")) {
-      toast.error("Nepodporovaný formát. Nahraj .gb, .gbc nebo .gba");
+      toast.error("Unsupported file type. Choose a .gb, .gbc, or .gba ROM.");
       return;
     }
     setFile(f);
     setSession(null);
     setTranslations([]);
+    setStatus("idle");
+    setProgress(0);
     pushLog(`> LOAD ${f.name} [${(f.size / 1024).toFixed(1)} KB]`, "cmd");
   };
 
@@ -151,13 +135,12 @@ export default function RomTranslator() {
       pushLog(`  FOUND : ${r.data.found_total} strings in ROM`, "info");
       pushLog(`  LOAD  : ${r.data.strings.length} story / dialog strings`, "ok");
       pushLog(`  SKIP  : ${r.data.excluded_names || 0} names (Pokemon, moves, items, places) kept original`, "info");
-      pushLog(`> READY. Choose target language and press TRANSLATE.`, "cmd");
-      loadHistory();
+      pushLog("> READY. Choose a target language and select TRANSLATE.", "cmd");
     } catch (e) {
       setStatus("error");
       const detail = e.response?.data?.detail || e.message || "Unknown error";
       pushLog(`! ERROR: ${detail}`, "err");
-      pushLog(`  Try switching encoding or scan mode.`, "err");
+      pushLog(`  Try changing the encoding or scan mode.`, "err");
       toast.error(`Extraction failed: ${detail}`);
     }
   };
@@ -165,8 +148,7 @@ export default function RomTranslator() {
   const translate = async () => {
     if (!session) return;
     if (aiSettings.provider !== "emergent" && !aiSettings.apiKey) {
-      toast.error("Zadej API klíč nebo přepni na Emergent Universal Key");
-      setSettingsOpen(true);
+      toast.error("Enter an API key in Settings before translating.");
       return;
     }
     setStatus("translating");
@@ -210,9 +192,9 @@ export default function RomTranslator() {
             pushLog(`  DONE. ${ok} translated${fromCache}, ${fail} failed (kept as original).`, fail ? "info" : "ok");
             if (fail) {
               data.errors?.forEach((er) => pushLog(`  ! ${er}`, "err"));
-              toast.warning(`${ok}/${data.total} přeloženo — ${fail} selhalo.`);
+              toast.warning(`${ok}/${data.total} translated; ${fail} failed.`);
             } else {
-              toast.success(cached > 0 ? `Překlad hotov! (${cached} z cache, ${ok - cached} nových)` : "Překlad dokončen!");
+              toast.success(cached > 0 ? `Translation complete: ${cached} from cache, ${ok - cached} new.` : "Translation complete.");
             }
           } else if (data.status === "error") {
             clearInterval(pollRef.current);
@@ -222,20 +204,12 @@ export default function RomTranslator() {
             const friendly = data.error || "Translation failed";
             pushLog(`! ERROR: ${friendly}`, "err");
             if (code === "EMERGENT_BUDGET_EXCEEDED") {
-              toast.error("Emergent kredit vyčerpán — přepni na vlastní AI klíč v Nastavení", {
+              toast.error("Emergent credits are exhausted. Switch to your own AI provider key in Settings.", {
                 duration: 8000,
-                action: {
-                  label: "Otevřít nastavení",
-                  onClick: () => setSettingsOpen(true),
-                },
               });
             } else if (code === "QUOTA_EXCEEDED" || code === "INVALID_KEY") {
               toast.error(friendly, {
                 duration: 8000,
-                action: {
-                  label: "Otevřít nastavení",
-                  onClick: () => setSettingsOpen(true),
-                },
               });
             } else {
               toast.error(friendly);
@@ -271,9 +245,9 @@ export default function RomTranslator() {
     if (!text.trim()) return;
     try {
       await axios.post(`${API}/cache/entry`, { source: s.text, translated: text, target_language: targetLang });
-      toast.success("Překlad uložen (i do cache)");
+      toast.success("Translation saved to cache.");
     } catch (e) {
-      toast.error("Uloženo jen lokálně, cache selhala: " + (e.response?.data?.detail || e.message));
+      toast.error("Saved locally, but could not update cache: " + (e.response?.data?.detail || e.message));
     }
   };
 
@@ -297,7 +271,7 @@ export default function RomTranslator() {
       a.click();
       URL.revokeObjectURL(url);
       pushLog(`  DONE. Patched ROM downloaded.`, "ok");
-      toast.success("Přeložená ROMka stažena!");
+      toast.success("Patched ROM downloaded.");
     } catch (e) {
       pushLog(`! PATCH FAILED: ${e.message}`, "err");
       toast.error("Download failed");
@@ -327,7 +301,7 @@ export default function RomTranslator() {
       a.click();
       URL.revokeObjectURL(url);
       pushLog(`  DONE. TXT downloaded — edit and re-upload via 'Insert Translation'.`, "ok");
-      toast.success("Textový soubor stažen!");
+      toast.success("Translation file downloaded.");
     } catch (e) {
       const msg = e.response?.data?.detail || e.message;
       pushLog(`! EXPORT FAILED: ${msg}`, "err");
@@ -358,7 +332,7 @@ export default function RomTranslator() {
       a.click();
       URL.revokeObjectURL(url);
       pushLog(`  DONE. Patched ${patched} strings (${missed} missed). ROM downloaded.`, "ok");
-      toast.success(`Patchnuto ${patched} řetězců, ROMka stažena!`);
+      toast.success(`Patched ${patched} strings. ROM downloaded.`);
     } catch (e) {
       const msg = e.response?.data?.detail || e.message;
       pushLog(`! INSERT FAILED: ${msg}`, "err");
@@ -385,24 +359,16 @@ export default function RomTranslator() {
             </div>
           </div>
           <div className="flex items-center gap-3">
-            <ClearCacheButton />
-            <button
-              onClick={() => setSettingsOpen(true)}
-              className="h-9 px-3 border border-neutral-700 hover:border-[#8BAC0F] rounded-sm font-mono text-[11px] uppercase tracking-wider text-neutral-300 hover:text-[#9BBC0F] transition-colors flex items-center gap-2"
-              data-testid="open-settings-btn"
-            >
-              <Settings2 className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">{providerLabel()}</span>
-              <span className="sm:hidden">AI</span>
-            </button>
+            <span className="hidden sm:inline-flex items-center gap-2 border border-neutral-800 px-3 py-2 font-mono text-[10px] uppercase text-neutral-400">
+              <Sparkles className="w-3 h-3 text-[#9BBC0F]" /> {providerLabel()}
+            </span>
           </div>
         </div>
       </header>
 
       <main className="max-w-[1400px] mx-auto p-4 sm:p-6 grid grid-cols-1 lg:grid-cols-12 gap-4 sm:gap-6">
-        {/* Dropzone */}
         <section
-          className={`lg:col-span-5 bg-neutral-900 border rounded-sm p-6 transition-colors ${
+          className={`lg:col-span-5 bg-neutral-900 border rounded-sm p-5 sm:p-6 transition-colors ${
             dragActive ? "border-[#8BAC0F]" : "border-neutral-800"
           }`}
           onDragOver={(e) => { e.preventDefault(); setDragActive(true); }}
@@ -411,11 +377,12 @@ export default function RomTranslator() {
           data-testid="dropzone-card"
         >
           <div className="flex items-center justify-between mb-4">
-            <h2 className="font-mono text-xs uppercase text-neutral-400 tracking-widest">01 · Cartridge Slot</h2>
+            <h2 className="font-mono text-xs uppercase text-neutral-400 tracking-widest">01 · Cartridge</h2>
             <FileArchive className="w-4 h-4 text-neutral-600" />
           </div>
+
           <div
-            className={`border-2 border-dashed p-8 text-center cursor-pointer transition-colors ${
+            className={`border-2 border-dashed p-6 text-center cursor-pointer transition-colors ${
               dragActive ? "border-[#8BAC0F] bg-[#8BAC0F]/5" : "border-neutral-700 hover:border-[#8BAC0F]"
             }`}
             onClick={() => fileInput.current?.click()}
@@ -429,27 +396,89 @@ export default function RomTranslator() {
               onChange={(e) => handleFile(e.target.files?.[0])}
               data-testid="rom-file-input"
             />
-            <Upload className="w-8 h-8 mx-auto mb-3 text-[#8BAC0F]" strokeWidth={1.5} />
+            <Upload className="w-7 h-7 mx-auto mb-2 text-[#8BAC0F]" strokeWidth={1.5} />
             {file ? (
               <>
                 <p className="font-mono text-sm text-[#9BBC0F] break-all" data-testid="selected-file-name">{file.name}</p>
-                <p className="font-mono text-xs text-neutral-500 mt-1">
-                  {(file.size / 1024).toFixed(1)} KB
-                </p>
+                <p className="font-mono text-xs text-neutral-500 mt-1">{(file.size / 1024).toFixed(1)} KB</p>
               </>
             ) : (
               <>
-                <p className="font-display text-base font-semibold">Insert ROM cartridge</p>
-                <p className="font-mono text-xs text-neutral-500 mt-2">
-                  Drop .gb / .gbc / .gba file or click to browse
-                </p>
+                <p className="font-display text-base font-semibold">Select a ROM</p>
+                <p className="font-mono text-xs text-neutral-500 mt-1.5">Drop a .gb, .gbc, or .gba file here</p>
               </>
             )}
           </div>
+
+          <details className="group mt-4 border border-neutral-800 bg-neutral-950/50" data-testid="settings-dropdown">
+            <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-3 font-mono text-[11px] uppercase tracking-wider text-neutral-300 hover:text-[#9BBC0F]">
+              <span className="flex items-center gap-2"><Settings2 className="w-3.5 h-3.5" /> Settings</span>
+              <span className="text-[10px] text-neutral-600 normal-case">{targetLang.toUpperCase()} · {providerLabel()}</span>
+              <ChevronDown className="w-4 h-4 shrink-0 transition-transform group-open:rotate-180" />
+            </summary>
+            <div className="space-y-4 border-t border-neutral-800 p-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <label className="block">
+                  <span className="font-mono text-[10px] uppercase text-neutral-500 mb-1.5 block">Target language</span>
+                  <Select value={targetLang} onValueChange={setTargetLang}>
+                    <SelectTrigger className="h-10 bg-neutral-950 border-neutral-700 rounded-sm font-mono text-xs" data-testid="language-select">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent className="bg-neutral-900 border-neutral-800 rounded-sm">
+                      {languages.map((language) => (
+                        <SelectItem key={language.code} value={language.code} className="font-mono text-xs" data-testid={`lang-option-${language.code}`}>
+                          <span className="text-[#8BAC0F] mr-2">{language.code.toUpperCase()}</span>{language.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </label>
+                <label className="block">
+                  <span className="font-mono text-[10px] uppercase text-neutral-500 mb-1.5 block">Text encoding</span>
+                  <Select value={encoding} onValueChange={setEncoding}>
+                    <SelectTrigger className="h-10 bg-neutral-950 border-neutral-700 rounded-sm font-mono text-xs" data-testid="encoding-select">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent className="bg-neutral-900 border-neutral-800 rounded-sm">
+                      {encodings.map((entry) => (
+                        <SelectItem key={entry.id} value={entry.id} className="font-mono text-xs" data-testid={`encoding-option-${entry.id}`}>
+                          {entry.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </label>
+              </div>
+
+              <label className="block">
+                <span className="font-mono text-[10px] uppercase text-neutral-500 mb-1.5 block">Scan mode</span>
+                <Select value={scanMode} onValueChange={setScanMode}>
+                  <SelectTrigger className="h-10 bg-neutral-950 border-neutral-700 rounded-sm font-mono text-xs" data-testid="scan-mode-select">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent className="bg-neutral-900 border-neutral-800 rounded-sm">
+                    <SelectItem value="bytewise" className="font-mono text-xs" data-testid="scan-mode-option-bytewise">
+                      Full scan · story and descriptions
+                    </SelectItem>
+                    <SelectItem value="pointers" className="font-mono text-xs" data-testid="scan-mode-option-pointers">
+                      Pointer table · GBA only
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+              </label>
+
+              <AiSettingsDialog
+                providers={providers}
+                settings={aiSettings}
+                onSave={setAiSettings}
+              />
+            </div>
+          </details>
+
           <button
             onClick={extract}
             disabled={!file || status === "extracting"}
-            className="mt-5 w-full h-11 bg-[#8BAC0F] text-black font-display font-bold text-sm tracking-wide rounded-sm btn-brutal disabled:opacity-40 disabled:cursor-not-allowed disabled:shadow-none flex items-center justify-center gap-2"
+            className="mt-4 w-full h-11 bg-[#8BAC0F] text-black font-display font-bold text-sm tracking-wide rounded-sm btn-brutal disabled:opacity-40 disabled:cursor-not-allowed disabled:shadow-none flex items-center justify-center gap-2"
             data-testid="extract-btn"
           >
             {status === "extracting" ? (
@@ -458,98 +487,11 @@ export default function RomTranslator() {
               <><Cpu className="w-4 h-4" /> SCAN & EXTRACT</>
             )}
           </button>
-        </section>
-
-        {/* Settings */}
-        <section className="lg:col-span-4 bg-neutral-900 border border-neutral-800 rounded-sm p-6" data-testid="settings-card">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="font-mono text-xs uppercase text-neutral-400 tracking-widest">02 · Config</h2>
-            <Languages className="w-4 h-4 text-neutral-600" />
-          </div>
-
-          <label className="font-mono text-[10px] uppercase text-neutral-500 tracking-wider mb-2 block">Target Language</label>
-          <Select value={targetLang} onValueChange={setTargetLang}>
-            <SelectTrigger
-              className="h-11 bg-neutral-950 border-neutral-700 rounded-sm font-mono text-sm"
-              data-testid="language-select"
-            >
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent className="bg-neutral-900 border-neutral-800 rounded-sm">
-              {languages.map((l) => (
-                <SelectItem key={l.code} value={l.code} className="font-mono text-sm" data-testid={`lang-option-${l.code}`}>
-                  <span className="text-[#8BAC0F] mr-2">{l.code.toUpperCase()}</span>{l.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-
-          <label className="font-mono text-[10px] uppercase text-neutral-500 tracking-wider mt-5 mb-2 block">Text Encoding</label>
-          <Select value={encoding} onValueChange={setEncoding}>
-            <SelectTrigger
-              className="h-11 bg-neutral-950 border-neutral-700 rounded-sm font-mono text-sm"
-              data-testid="encoding-select"
-            >
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent className="bg-neutral-900 border-neutral-800 rounded-sm">
-              {encodings.map((e) => (
-                <SelectItem key={e.id} value={e.id} className="font-mono text-sm" data-testid={`encoding-option-${e.id}`}>
-                  {e.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-
-          <label className="font-mono text-[10px] uppercase text-neutral-500 tracking-wider mt-5 mb-2 block">
-            Scan Mode <span className="text-neutral-600 normal-case tracking-normal">— text detection strategy</span>
-          </label>
-          <Select value={scanMode} onValueChange={setScanMode}>
-            <SelectTrigger
-              className="h-11 bg-neutral-950 border-neutral-700 rounded-sm font-mono text-sm"
-              data-testid="scan-mode-select"
-            >
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent className="bg-neutral-900 border-neutral-800 rounded-sm">
-              <SelectItem value="bytewise" className="font-mono text-sm" data-testid="scan-mode-option-bytewise">
-                Full scan (story + descriptions)
-                <span className="text-[#9BBC0F] ml-2">recommended</span>
-              </SelectItem>
-              <SelectItem value="pointers" className="font-mono text-sm" data-testid="scan-mode-option-pointers">
-                Pointer table (GBA only · strictest, fewer texts)
-              </SelectItem>
-            </SelectContent>
-          </Select>
-
-          <label className="font-mono text-[10px] uppercase text-neutral-500 tracking-wider mt-5 mb-2 block">Output Mode</label>
-          <div className="grid grid-cols-2 gap-2">
-            {MODES.map((m) => {
-              const Icon = m.icon;
-              const active = mode === m.id;
-              return (
-                <button
-                  key={m.id}
-                  onClick={() => setMode(m.id)}
-                  className={`h-11 border rounded-sm text-xs font-display font-semibold flex items-center justify-center gap-1.5 transition-colors ${
-                    active
-                      ? "border-[#8BAC0F] bg-[#8BAC0F]/10 text-[#9BBC0F]"
-                      : "border-neutral-700 text-neutral-400 hover:border-neutral-600"
-                  }`}
-                  data-testid={`mode-${m.id}`}
-                >
-                  <Icon className="w-3.5 h-3.5" />
-                  <span className="hidden sm:inline">{m.label}</span>
-                  <span className="sm:hidden">{m.id === "export" ? "Export" : "Patch"}</span>
-                </button>
-              );
-            })}
-          </div>
 
           <button
             onClick={translate}
             disabled={!session || status === "translating"}
-            className="mt-5 w-full h-11 bg-[#8BAC0F] text-black font-display font-bold text-sm tracking-wide rounded-sm btn-brutal disabled:opacity-40 disabled:cursor-not-allowed disabled:shadow-none flex items-center justify-center gap-2"
+            className="mt-2 w-full h-11 bg-transparent border border-[#8BAC0F] text-[#9BBC0F] font-display font-bold text-sm tracking-wide rounded-sm disabled:opacity-30 disabled:cursor-not-allowed hover:bg-[#8BAC0F]/10 transition-colors flex items-center justify-center gap-2"
             data-testid="translate-btn"
           >
             {status === "translating" ? (
@@ -559,107 +501,73 @@ export default function RomTranslator() {
             )}
           </button>
 
+          <button
+            onClick={downloadPatched}
+            disabled={status !== "done"}
+            className="mt-2 w-full h-11 bg-transparent border border-neutral-700 text-neutral-300 font-display font-bold text-sm tracking-wide rounded-sm disabled:opacity-30 disabled:cursor-not-allowed hover:border-[#8BAC0F] hover:text-[#9BBC0F] transition-colors flex items-center justify-center gap-2"
+            data-testid="download-btn"
+          >
+            <Download className="w-4 h-4" /> DOWNLOAD PATCHED ROM
+          </button>
+
           {session?.strings?.length > 0 && (() => {
-            const est = estimateCost(session.strings, aiSettings.provider, aiSettings.model || providers?.[aiSettings.provider]?.default, providers);
-            if (!est) return null;
-            const fmt = (v) => v < 0.001 ? "<$0.001" : v < 0.01 ? `$${v.toFixed(4)}` : `$${v.toFixed(3)}`;
+            const estimate = estimateCost(session.strings, aiSettings.provider, aiSettings.model || providers?.[aiSettings.provider]?.default, providers);
+            if (!estimate) return null;
+            const formatCost = (value) => value < 0.001 ? "<$0.001" : value < 0.01 ? `$${value.toFixed(4)}` : `$${value.toFixed(3)}`;
             return (
               <div className="mt-3 border border-neutral-800 rounded-sm p-3 bg-neutral-950/70" data-testid="cost-estimate">
-                <div className="flex items-center justify-between font-mono text-[10px] uppercase text-neutral-500 tracking-widest mb-2">
+                <div className="flex items-center justify-between font-mono text-[10px] uppercase text-neutral-500 mb-2">
                   <span>Estimated cost</span>
-                  <span className="text-[#9BBC0F]">{fmt(est.total)}</span>
+                  <span className="text-[#9BBC0F]">{formatCost(estimate.total)}</span>
                 </div>
-                <div className="font-mono text-[10px] text-neutral-500 flex justify-between">
-                  <span>{est.count} strings · ~{Math.round((est.inTokens + est.outTokens) / 1000)}k tokens</span>
-                  <span>in {fmt(est.input)} + out {fmt(est.output)}</span>
+                <div className="font-mono text-[10px] text-neutral-500 flex justify-between gap-2">
+                  <span>{estimate.count} strings · ~{Math.round((estimate.inTokens + estimate.outTokens) / 1000)}k tokens</span>
+                  <span>In {formatCost(estimate.input)} · Out {formatCost(estimate.output)}</span>
                 </div>
-                <p className="font-mono text-[9px] text-neutral-600 mt-1.5">
-                  * Rough estimate based on provider list pricing. Emergent Universal Key deducts from your credit balance.
-                </p>
               </div>
             );
           })()}
 
-          {mode === "patch" && (
-            <button
-              onClick={downloadPatched}
-              disabled={status !== "done"}
-              className="mt-3 w-full h-11 bg-transparent border border-[#8BAC0F] text-[#9BBC0F] font-display font-bold text-sm tracking-wide rounded-sm disabled:opacity-30 disabled:cursor-not-allowed hover:bg-[#8BAC0F]/10 transition-colors flex items-center justify-center gap-2"
-              data-testid="download-btn"
-            >
-              <Download className="w-4 h-4" /> DOWNLOAD PATCHED ROM
-            </button>
-          )}
-
-          {mode === "export" && (
-            <>
+          <details className="group mt-4 border-t border-neutral-800 pt-3" data-testid="text-file-options">
+            <summary className="flex cursor-pointer list-none items-center justify-between gap-3 font-mono text-[10px] uppercase tracking-wider text-neutral-500 hover:text-neutral-300">
+              <span className="flex items-center gap-2"><FileText className="w-3.5 h-3.5" /> Other options · export / import</span>
+              <ChevronDown className="w-4 h-4 transition-transform group-open:rotate-180" />
+            </summary>
+            <div className="pt-3">
               <button
                 onClick={exportTxt}
                 disabled={!session}
-                className="mt-3 w-full h-11 bg-transparent border border-[#8BAC0F] text-[#9BBC0F] font-display font-bold text-sm tracking-wide rounded-sm disabled:opacity-30 disabled:cursor-not-allowed hover:bg-[#8BAC0F]/10 transition-colors flex items-center justify-center gap-2"
+                className="w-full h-10 bg-transparent border border-neutral-700 hover:border-[#8BAC0F] text-neutral-300 hover:text-[#9BBC0F] font-display font-bold text-xs tracking-wide rounded-sm disabled:opacity-30 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2"
                 data-testid="export-txt-btn"
               >
-                <FileText className="w-4 h-4" /> EXPORT AS TEXT FILE
+                <FileText className="w-4 h-4" /> EXPORT TRANSLATION FILE
               </button>
               <input
                 ref={importInput}
                 type="file"
                 accept=".txt,text/plain"
                 className="hidden"
-                onChange={(e) => {
-                  const f = e.target.files?.[0];
-                  if (f) importAndPatch(f);
-                  e.target.value = "";
+                onChange={(event) => {
+                  const selectedFile = event.target.files?.[0];
+                  if (selectedFile) importAndPatch(selectedFile);
+                  event.target.value = "";
                 }}
                 data-testid="import-txt-input"
               />
               <button
                 onClick={() => importInput.current?.click()}
                 disabled={!session}
-                className="mt-2 w-full h-11 bg-transparent border border-neutral-700 hover:border-[#8BAC0F] text-neutral-300 hover:text-[#9BBC0F] font-display font-bold text-sm tracking-wide rounded-sm disabled:opacity-30 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2"
+                className="mt-2 w-full h-10 bg-transparent border border-neutral-700 hover:border-[#8BAC0F] text-neutral-300 hover:text-[#9BBC0F] font-display font-bold text-xs tracking-wide rounded-sm disabled:opacity-30 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2"
                 data-testid="insert-translation-btn"
               >
-                <FileUp className="w-4 h-4" /> INSERT TRANSLATION
+                <FileUp className="w-4 h-4" /> IMPORT & BUILD ROM
               </button>
-              <p className="font-mono text-[10px] text-neutral-600 mt-2 leading-relaxed">
-                Export → uprav .txt v jakémkoli editoru → Insert Translation nahraje soubor a přepíše ROMku.
-              </p>
-            </>
-          )}
-        </section>
-
-        {/* History */}
-        <section className="lg:col-span-3 bg-neutral-900 border border-neutral-800 rounded-sm p-6" data-testid="history-card">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="font-mono text-xs uppercase text-neutral-400 tracking-widest">03 · Recent</h2>
-            <History className="w-4 h-4 text-neutral-600" />
-          </div>
-          {history.length === 0 ? (
-            <p className="font-mono text-xs text-neutral-600">No sessions yet.</p>
-          ) : (
-            <ul className="space-y-2" data-testid="history-list">
-              {history.slice(0, 6).map((h) => (
-                <li key={h.session_id} className="border border-neutral-800 rounded-sm p-2.5 hover:border-neutral-700 transition-colors">
-                  <p className="font-mono text-[11px] text-neutral-200 truncate">{h.filename}</p>
-                  <p className="font-mono text-[10px] text-neutral-500 mt-0.5 flex items-center gap-2">
-                    <span className="text-[#8BAC0F]">{h.rom_type}</span>
-                    <span>·</span>
-                    <span>{h.string_count} str</span>
-                    {h.target_language && (
-                      <>
-                        <span>·</span>
-                        <span className="text-[#9BBC0F]">{h.target_language.toUpperCase()}</span>
-                      </>
-                    )}
-                  </p>
-                </li>
-              ))}
-            </ul>
-          )}
+            </div>
+          </details>
         </section>
 
         {/* Terminal */}
-        <section className="lg:col-span-8 bg-black border border-neutral-800 rounded-sm overflow-hidden scanlines" data-testid="terminal-card">
+        <section className="lg:col-span-7 bg-black border border-neutral-800 rounded-sm overflow-hidden scanlines" data-testid="terminal-card">
           <div className="flex items-center justify-between px-4 py-2.5 bg-neutral-900 border-b border-neutral-800">
             <div className="flex items-center gap-2">
               <div className="w-2.5 h-2.5 rounded-full bg-[#C7305C]"></div>
@@ -691,8 +599,8 @@ export default function RomTranslator() {
         </section>
 
         {/* Session stats */}
-        <section className="lg:col-span-4 bg-neutral-900 border border-neutral-800 rounded-sm p-6" data-testid="stats-card">
-          <h2 className="font-mono text-xs uppercase text-neutral-400 tracking-widest mb-4">04 · Session Stats</h2>
+        <section className="lg:col-span-5 bg-neutral-900 border border-neutral-800 rounded-sm p-6" data-testid="stats-card">
+          <h2 className="font-mono text-xs uppercase text-neutral-400 tracking-widest mb-4">02 · Session</h2>
           <dl className="space-y-3 font-mono text-xs">
             <StatRow label="ROM Type" value={session?.rom_type || "—"} />
             <StatRow label="Size" value={session ? `${(session.rom_size / 1024).toFixed(1)} KB` : "—"} />
@@ -700,7 +608,6 @@ export default function RomTranslator() {
             <StatRow label="Found in ROM" value={session?.found_total ?? "—"} />
             <StatRow label="Loaded" value={session?.strings?.length ?? "—"} highlight />
             <StatRow label="Target" value={targetLang.toUpperCase()} />
-            <StatRow label="Mode" value={mode === "export" ? "EXPORT TXT" : "PATCH"} />
             <StatRow label="AI" value={<span className="inline-flex items-center gap-1"><Sparkles className="w-3 h-3" />{(aiSettings.provider || "emergent").toUpperCase()}</span>} />
             <StatRow
               label="Translated"
@@ -711,12 +618,10 @@ export default function RomTranslator() {
         </section>
 
         {/* Translation table */}
-        <section className="lg:col-span-12 bg-neutral-900 border border-neutral-800 rounded-sm" data-testid="viewer-card">
+        <section className="lg:col-span-7 bg-neutral-900 border border-neutral-800 rounded-sm" data-testid="viewer-card">
           <div className="flex items-center justify-between px-6 py-4 border-b border-neutral-800">
             <h2 className="font-display text-lg font-bold tracking-tight">Translation Viewer</h2>
-            <span className="font-mono text-[11px] text-neutral-500">
-              {session?.strings?.length || 0} extracted strings
-            </span>
+            <span className="font-mono text-[11px] text-neutral-500">{session?.strings?.length || 0} strings</span>
           </div>
           <TranslationTable
             strings={session?.strings || []}
@@ -729,18 +634,10 @@ export default function RomTranslator() {
 
       <footer className="border-t border-neutral-800 mt-8 py-6 px-6">
         <div className="max-w-[1400px] mx-auto flex flex-col sm:flex-row items-center justify-between gap-2 font-mono text-[10px] text-neutral-600 uppercase tracking-widest">
-          <span>rom.translate · v0.2 · dmg-01 mode</span>
-          <span>bring your own key · gemini · openai · claude</span>
+          <span>ROM Translate</span>
+          <span>Gemini · OpenAI · Anthropic · FreeTheAI</span>
         </div>
       </footer>
-
-      <AiSettingsDialog
-        open={settingsOpen}
-        onOpenChange={setSettingsOpen}
-        providers={providers}
-        settings={aiSettings}
-        onSave={setAiSettings}
-      />
     </div>
   );
 }

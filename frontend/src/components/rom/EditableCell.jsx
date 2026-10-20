@@ -25,7 +25,7 @@ export const EditableCell = ({ value, maxLen, onSave, index, encoding }) => {
         <button
           onClick={start}
           className="shrink-0 p-1 rounded-sm text-neutral-600 hover:text-[#9BBC0F] hover:bg-neutral-800 transition-colors"
-          title="Upravit překlad"
+          title="Edit translation"
           data-testid={`edit-btn-${index}`}
         >
           <Pencil className="w-3.5 h-3.5" />
@@ -52,13 +52,13 @@ export const EditableCell = ({ value, maxLen, onSave, index, encoding }) => {
       />
       <div className="flex items-center justify-between gap-2">
         <span className={`font-mono text-[10px] ${over ? "text-amber-400" : "text-neutral-500"}`} data-testid={`edit-len-${index}`}>
-          {used} / {maxLen} B{over ? " · bude zkráceno v ROM" : ""}
+          {used} / {maxLen} B{over ? " · will be truncated in the ROM" : ""}
         </span>
         <div className="flex gap-1">
-          <button onClick={save} className="p-1 rounded-sm text-[#9BBC0F] hover:bg-neutral-800" title="Uložit (Enter)" data-testid={`edit-save-${index}`}>
+          <button onClick={save} className="p-1 rounded-sm text-[#9BBC0F] hover:bg-neutral-800" title="Save (Enter)" data-testid={`edit-save-${index}`}>
             <Check className="w-3.5 h-3.5" />
           </button>
-          <button onClick={() => setEditing(false)} className="p-1 rounded-sm text-neutral-400 hover:bg-neutral-800" title="Zrušit (Esc)" data-testid={`edit-cancel-${index}`}>
+          <button onClick={() => setEditing(false)} className="p-1 rounded-sm text-neutral-400 hover:bg-neutral-800" title="Cancel (Esc)" data-testid={`edit-cancel-${index}`}>
             <X className="w-3.5 h-3.5" />
           </button>
         </div>
