@@ -27,10 +27,10 @@ import {
 } from "@/components/ui/select";
 import Terminal from "@/components/rom/Terminal";
 import TranslationTable from "@/components/rom/TranslationTable";
-import AiSettingsDialog, { loadSettings } from "@/components/rom/AiSettingsDialog";
+import AiSettingsDialog, { loadSettings, saveSettings } from "@/components/rom/AiSettingsDialog";
 import { ClearCacheButton } from "@/components/rom/ClearCacheButton";
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
+const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || "";
 const API = `${BACKEND_URL}/api`;
 
 const MODES = [
@@ -71,6 +71,19 @@ export default function RomTranslator() {
     loadHistory();
     pushLog("SYSTEM READY. Insert cartridge to begin.", "sys");
   }, [pushLog]);
+
+  useEffect(() => {
+    const providerIds = Object.keys(providers);
+    if (!providerIds.length || providers[aiSettings.provider]) return;
+    const fallbackProvider = providers.gemini ? "gemini" : providerIds[0];
+    const nextSettings = {
+      provider: fallbackProvider,
+      model: providers[fallbackProvider]?.default || "",
+      apiKey: "",
+    };
+    saveSettings(nextSettings);
+    setAiSettings(nextSettings);
+  }, [providers, aiSettings.provider]);
 
   useEffect(() => () => {
     if (pollRef.current) clearInterval(pollRef.current);

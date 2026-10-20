@@ -2,21 +2,20 @@ from fastapi import FastAPI, APIRouter, HTTPException, UploadFile, File, Form
 from fastapi.responses import Response
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
-from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import re
 import json
 import logging
 import uuid
 import base64
+from contextlib import contextmanager
+import sqlite3
 import unicodedata
 from pathlib import Path
 from pydantic import BaseModel, Field
 from typing import List, Optional, Literal
 from datetime import datetime, timezone
 
-from emergentintegrations.llm.chat import LlmChat, UserMessage
-from google import genai as google_genai
 from json_repair import repair_json as _repair_json
 
 from charmaps import (
@@ -34,10 +33,109 @@ from text_extract import (extract_texts, patch_payload, protect_glossary_terms,
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
-# MongoDB connection
-mongo_url = os.environ['MONGO_URL']
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
+DATA_DIR = Path(os.environ.get("APP_DATA_DIR", ROOT_DIR / "data"))
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+DB_PATH = DATA_DIR / "rom_translator.sqlite3"
+
+
+@contextmanager
+def _db_connect():
+    conn = sqlite3.connect(DB_PATH, timeout=10)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout = 10000")
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def _init_db():
+    with _db_connect() as conn:
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS rom_sessions (
+                session_id TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL,
+                record_json TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS rom_glossaries (
+                session_id TEXT PRIMARY KEY,
+                names_json TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS translation_cache (
+                key TEXT PRIMARY KEY,
+                source TEXT NOT NULL,
+                translated TEXT NOT NULL,
+                target_lang TEXT NOT NULL,
+                manual INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_translation_cache_lang
+                ON translation_cache(target_lang);
+        """)
+
+
+def _get_session(session_id: str) -> Optional[dict]:
+    with _db_connect() as conn:
+        row = conn.execute(
+            "SELECT record_json FROM rom_sessions WHERE session_id = ?", (session_id,)
+        ).fetchone()
+    return json.loads(row["record_json"]) if row else None
+
+
+def _insert_session(record: dict):
+    with _db_connect() as conn:
+        conn.execute(
+            "INSERT INTO rom_sessions (session_id, created_at, record_json) VALUES (?, ?, ?)",
+            (record["session_id"], record["created_at"], json.dumps(record)),
+        )
+
+
+def _update_session(session_id: str, fields: dict):
+    with _db_connect() as conn:
+        row = conn.execute(
+            "SELECT record_json FROM rom_sessions WHERE session_id = ?", (session_id,)
+        ).fetchone()
+        if row:
+            record = json.loads(row["record_json"])
+            record.update(fields)
+            conn.execute(
+                "UPDATE rom_sessions SET record_json = ? WHERE session_id = ?",
+                (json.dumps(record), session_id),
+            )
+
+
+def _list_sessions(limit: int = 20) -> list:
+    with _db_connect() as conn:
+        rows = conn.execute(
+            "SELECT record_json FROM rom_sessions ORDER BY created_at DESC LIMIT ?", (limit,)
+        ).fetchall()
+    return [json.loads(row["record_json"]) for row in rows]
+
+
+def _upsert_glossary(session_id: str, names: list):
+    with _db_connect() as conn:
+        conn.execute(
+            "INSERT INTO rom_glossaries (session_id, names_json) VALUES (?, ?) "
+            "ON CONFLICT(session_id) DO UPDATE SET names_json = excluded.names_json",
+            (session_id, json.dumps(names)),
+        )
+
+
+def _get_glossary(session_id: str) -> list:
+    with _db_connect() as conn:
+        row = conn.execute(
+            "SELECT names_json FROM rom_glossaries WHERE session_id = ?", (session_id,)
+        ).fetchone()
+    return json.loads(row["names_json"]) if row else []
+
+
+_init_db()
 
 EMERGENT_LLM_KEY = os.environ.get('EMERGENT_LLM_KEY')
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
@@ -146,10 +244,18 @@ async def _cache_lookup(texts_by_lang: dict) -> dict:
             key_meta[k] = (lang, t)
     if not all_keys:
         return hits
-    async for doc in db.translation_cache.find({"key": {"$in": all_keys}}, {"_id": 0, "key": 1, "translated": 1}):
-        meta = key_meta.get(doc["key"])
-        if meta:
-            hits[meta] = doc["translated"]
+    with _db_connect() as conn:
+        for start in range(0, len(all_keys), 900):
+            keys = all_keys[start:start + 900]
+            placeholders = ",".join("?" for _ in keys)
+            rows = conn.execute(
+                f"SELECT key, translated FROM translation_cache WHERE key IN ({placeholders})",
+                keys,
+            ).fetchall()
+            for row in rows:
+                meta = key_meta.get(row["key"])
+                if meta:
+                    hits[meta] = row["translated"]
     return hits
 
 
@@ -157,17 +263,26 @@ async def _cache_store_many(items: list):
     """items: list of {key, source, translated, target_lang}. Bulk upsert."""
     if not items:
         return
-    from pymongo import UpdateOne
-    ops = []
     now = datetime.now(timezone.utc).isoformat()
-    for it in items:
-        ops.append(UpdateOne(
-            {"key": it["key"]},
-            {"$set": {**it, "updated_at": now}, "$setOnInsert": {"created_at": now}},
-            upsert=True,
-        ))
     try:
-        await db.translation_cache.bulk_write(ops, ordered=False)
+        with _db_connect() as conn:
+            conn.executemany("""
+                INSERT INTO translation_cache
+                    (key, source, translated, target_lang, manual, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET
+                    source = excluded.source,
+                    translated = excluded.translated,
+                    target_lang = excluded.target_lang,
+                    manual = excluded.manual,
+                    updated_at = excluded.updated_at
+            """, [
+                (
+                    item["key"], item["source"], item["translated"], item["target_lang"],
+                    int(bool(item.get("manual", False))), now, now,
+                )
+                for item in items
+            ])
     except Exception as e:
         logging.warning(f"Cache bulk_write failed: {e}")
 
@@ -276,7 +391,7 @@ HARD_MAX_STRINGS = 100000     # hard cap regardless of user choice (protects RAM
 UNLIMITED_SENTINEL = 0        # 0 or negative == "no user cap; use HARD_MAX_STRINGS"
 MAX_BATCH_STRINGS = 60
 MAX_BATCH_CHARS = 6000
-MAX_PARALLEL = 8              # parallel batch calls
+MAX_PARALLEL = max(1, int(os.environ.get("MAX_PARALLEL", "8")))
 LLM_TIMEOUT = 150             # seconds per LLM call (thinking models answer slowly on big batches)
 PRINTABLE_RE = re.compile(rb"[\x20-\x7E]{%d,}" % MIN_STRING_LEN)
 
@@ -390,8 +505,8 @@ def extract_strings_from_bytes(data: bytes, encoding: str = "ascii", max_strings
 
 
 # ---------- Session storage (ROM binary) ----------
-SESSION_DIR = ROOT_DIR / "rom_sessions"
-SESSION_DIR.mkdir(exist_ok=True)
+SESSION_DIR = DATA_DIR / "rom_sessions"
+SESSION_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def rom_path(session_id: str) -> Path:
@@ -411,7 +526,10 @@ async def get_languages():
 
 @api_router.get("/providers")
 async def get_providers():
-    return PROVIDERS
+    providers = dict(PROVIDERS)
+    if os.environ.get("DISABLE_EMERGENT_PROVIDER") == "1":
+        providers.pop("emergent", None)
+    return providers
 
 
 class TestKeyRequest(BaseModel):
@@ -472,7 +590,7 @@ async def analyze_rom(session_id: str):
     p = rom_path(session_id)
     if not p.exists():
         raise HTTPException(status_code=404, detail="Session not found")
-    sess = await db.rom_sessions.find_one({"session_id": session_id}, {"_id": 0})
+    sess = _get_session(session_id)
     enc = (sess or {}).get("encoding", "ascii")
     data = p.read_bytes()
     if enc == "pokemon_gen3":
@@ -532,9 +650,7 @@ async def extract_rom(
     if max_strings > 0:
         strings = strings[:max_strings]
     found_total = len(strings)
-    await db.rom_glossaries.update_one(
-        {"session_id": session_id}, {"$set": {"session_id": session_id, "names": sorted(names)}}, upsert=True
-    )
+    _upsert_glossary(session_id, sorted(names))
     rom_type = detect_rom_type(fn, len(data))
 
     record = {
@@ -549,7 +665,7 @@ async def extract_rom(
         "excluded_names": len(names),
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
-    await db.rom_sessions.insert_one(record)
+    _insert_session(record)
 
     return ExtractResponse(
         session_id=session_id,
@@ -651,6 +767,7 @@ async def _call_llm(prompt: str, provider: str, model: Optional[str], api_key: O
         key = api_key or GEMINI_API_KEY
         if not key:
             raise HTTPException(status_code=400, detail="Gemini API key missing")
+        from google import genai as google_genai
         client_ = google_genai.Client(api_key=key)
         try:
             resp = await asyncio.wait_for(
@@ -711,6 +828,13 @@ async def _call_llm(prompt: str, provider: str, model: Optional[str], api_key: O
 
     # --- Emergent Universal Key via emergentintegrations ---
     if provider == "emergent":
+        try:
+            from emergentintegrations.llm.chat import LlmChat, UserMessage
+        except ImportError as e:
+            raise HTTPException(
+                status_code=501,
+                detail="Emergent provider is unavailable in this installation; choose another provider.",
+            ) from e
         # Allow the user to bring their OWN emergent key (from Profile → Manage plan → Universal Key)
         # to bypass the server-side pod-scoped key that has a $1 free-tier cap.
         key = api_key or EMERGENT_LLM_KEY
@@ -910,10 +1034,9 @@ async def translate_rom_start(req: TranslateRequest):
         "model": req.model or PROVIDERS[provider]["default"],
     }
 
-    sess_doc = await db.rom_sessions.find_one({"session_id": req.session_id}, {"_id": 0, "encoding": 1})
-    gl_doc = await db.rom_glossaries.find_one({"session_id": req.session_id}, {"_id": 0, "names": 1})
+    sess_doc = _get_session(req.session_id)
     job_encoding = (sess_doc or {}).get("encoding", "ascii")
-    job_names = set((gl_doc or {}).get("names", []))
+    job_names = set(_get_glossary(req.session_id))
 
     async def worker():
         # === CACHE LOOKUP: skip strings we've already translated ===
@@ -1018,11 +1141,10 @@ async def translate_rom_start(req: TranslateRequest):
                 JOBS[job_id]["status"] = "done"
                 if abort_flag["stop"]:
                     JOBS[job_id]["error_code"] = _error_code(abort_flag.get("reason") or "")
-            await db.rom_sessions.update_one(
-                {"session_id": req.session_id},
-                {"$set": {"target_language": req.target_language,
-                          "translated_at": datetime.now(timezone.utc).isoformat()}}
-            )
+            _update_session(req.session_id, {
+                "target_language": req.target_language,
+                "translated_at": datetime.now(timezone.utc).isoformat(),
+            })
         except Exception as e:
             JOBS[job_id]["status"] = "error"
             JOBS[job_id]["error"] = str(e)
@@ -1053,10 +1175,15 @@ async def translate_rom_status(job_id: str):
 
 @api_router.get("/cache/stats")
 async def cache_stats():
-    total = await db.translation_cache.count_documents({})
-    # per-language counts
-    pipeline = [{"$group": {"_id": "$target_lang", "count": {"$sum": 1}}}, {"$sort": {"count": -1}}]
-    per_lang = [{"lang": d["_id"], "count": d["count"]} async for d in db.translation_cache.aggregate(pipeline)]
+    with _db_connect() as conn:
+        total = conn.execute("SELECT COUNT(*) FROM translation_cache").fetchone()[0]
+        per_lang = [
+            {"lang": row["target_lang"], "count": row["count"]}
+            for row in conn.execute(
+                "SELECT target_lang, COUNT(*) AS count FROM translation_cache "
+                "GROUP BY target_lang ORDER BY count DESC"
+            ).fetchall()
+        ]
     return {"total": total, "per_language": per_lang}
 
 
@@ -1082,9 +1209,14 @@ async def cache_entry(req: CacheEntryRequest):
 
 @api_router.post("/cache/clear")
 async def cache_clear(target_language: Optional[str] = None):
-    q = {"target_lang": target_language} if target_language else {}
-    r = await db.translation_cache.delete_many(q)
-    return {"deleted": r.deleted_count}
+    with _db_connect() as conn:
+        if target_language:
+            result = conn.execute(
+                "DELETE FROM translation_cache WHERE target_lang = ?", (target_language,)
+            )
+        else:
+            result = conn.execute("DELETE FROM translation_cache")
+    return {"deleted": result.rowcount}
 
 
 @api_router.post("/rom/export")
@@ -1094,7 +1226,7 @@ async def export_translations(req: PatchRequest):
     The user can edit the file freely and later re-upload via /api/rom/import
     to patch the ROM with their edits.
     """
-    sess = await db.rom_sessions.find_one({"session_id": req.session_id}, {"_id": 0})
+    sess = _get_session(req.session_id)
     if not sess:
         raise HTTPException(status_code=404, detail="Session not found")
 
@@ -1190,7 +1322,7 @@ async def import_translations(
         )
 
     # Load ROM & encoding
-    sess = await db.rom_sessions.find_one({"session_id": session_id}, {"_id": 0})
+    sess = _get_session(session_id)
     enc = (sess or {}).get("encoding", "ascii")
     data = bytearray(p.read_bytes())
 
@@ -1222,7 +1354,7 @@ async def patch_rom(req: PatchRequest):
     if not p.exists():
         raise HTTPException(status_code=404, detail="ROM session not found")
 
-    sess = await db.rom_sessions.find_one({"session_id": req.session_id}, {"_id": 0})
+    sess = _get_session(req.session_id)
     enc = (sess or {}).get("encoding", "ascii")
 
     data = bytearray(p.read_bytes())
@@ -1247,8 +1379,7 @@ async def patch_rom(req: PatchRequest):
 
 @api_router.get("/history")
 async def get_history():
-    docs = await db.rom_sessions.find({}, {"_id": 0}).sort("created_at", -1).to_list(20)
-    return docs
+    return _list_sessions()
 
 
 app.include_router(api_router)
@@ -1266,6 +1397,3 @@ logging.basicConfig(level=logging.INFO,
 logger = logging.getLogger(__name__)
 
 
-@app.on_event("shutdown")
-async def shutdown_db_client():
-    client.close()

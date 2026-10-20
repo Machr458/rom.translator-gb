@@ -143,7 +143,20 @@ class TestAutomaticTranslationBatching:
         count_limited = _build_translation_batches(list(_group_strings_by_text(many_short).values()))
         assert [len(batch) for batch in count_limited] == [60, 1]
 
-    def test_worker_translates_only_unique_uncached_texts(self):
+    def test_worker_uses_sqlite_and_translates_only_unique_uncached_texts(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(server, "DB_PATH", tmp_path / "test.sqlite3")
+        server._init_db()
+        server._insert_session({
+            "session_id": "batch-test",
+            "created_at": "2026-01-01T00:00:00+00:00",
+            "encoding": "ascii",
+        })
+        asyncio.run(server._cache_store_many([{
+            "key": server._cache_key("already translated", "cs"),
+            "source": "already translated",
+            "translated": "z cache",
+            "target_lang": "cs",
+        }]))
         strings = [
             ExtractedString(id="a1", text="duplicate", offset=0, length=9),
             ExtractedString(id="a2", text="duplicate", offset=10, length=9),
@@ -159,20 +172,6 @@ class TestAutomaticTranslationBatching:
         translated_batches = []
         scheduled_workers = []
 
-        class FakeCollection:
-            async def find_one(self, *args, **kwargs):
-                return {}
-
-            async def update_one(self, *args, **kwargs):
-                return None
-
-        class FakeDatabase:
-            rom_sessions = FakeCollection()
-            rom_glossaries = FakeCollection()
-
-        async def fake_cache_lookup(_texts_by_lang):
-            return {("cs", "already translated"): "z cache"}
-
         async def fake_translate(_lang, batch, *_args):
             translated_batches.append([item.text for item in batch])
             return [
@@ -180,13 +179,7 @@ class TestAutomaticTranslationBatching:
                 for item in batch
             ]
 
-        async def fake_cache_store(_items):
-            return None
-
-        with patch.object(server, "db", FakeDatabase()), \
-                patch.object(server, "_cache_lookup", side_effect=fake_cache_lookup), \
-                patch.object(server, "_translate_batch", side_effect=fake_translate), \
-                patch.object(server, "_cache_store_many", side_effect=fake_cache_store), \
+        with patch.object(server, "_translate_batch", side_effect=fake_translate), \
                 patch("asyncio.create_task", side_effect=scheduled_workers.append):
             response = asyncio.run(server.translate_rom_start(request))
             asyncio.run(scheduled_workers[0])
@@ -197,6 +190,48 @@ class TestAutomaticTranslationBatching:
         assert job["cached_count"] == 1
         assert job["translated_count"] == 3
         assert {item["id"] for item in job["translations"]} == {"a1", "a2", "cached"}
+        assert asyncio.run(server._cache_lookup({"cs": {"duplicate"}})) == {
+            ("cs", "duplicate"): "prelozeno",
+        }
+        assert server._get_session("batch-test")["target_language"] == "cs"
+
+
+class TestSQLiteEndpoints:
+    def test_extract_history_and_cache_endpoints(self, tmp_path, monkeypatch):
+        from fastapi.testclient import TestClient
+
+        monkeypatch.setattr(server, "DB_PATH", tmp_path / "api.sqlite3")
+        monkeypatch.setattr(server, "SESSION_DIR", tmp_path / "rom_sessions")
+        server.SESSION_DIR.mkdir()
+        server._init_db()
+
+        rom = bytearray(b"\x00" * 4096)
+        rom[0x100:0x10D] = b"HELLO WORLD\x00"
+        rom[0x120:0x12A] = b"GAME OVER\x00"
+        with TestClient(server.app) as client:
+            extracted = client.post(
+                "/api/rom/extract",
+                files={"file": ("sample.gb", bytes(rom), "application/octet-stream")},
+                data={"encoding": "ascii", "max_strings": "10"},
+            )
+            assert extracted.status_code == 200, extracted.text
+            session_id = extracted.json()["session_id"]
+
+            history = client.get("/api/history")
+            assert history.status_code == 200
+            assert history.json()[0]["session_id"] == session_id
+
+            saved = client.post("/api/cache/entry", json={
+                "source": "HELLO",
+                "translated": "AHOJ",
+                "target_language": "cs",
+            })
+            assert saved.status_code == 200
+            stats = client.get("/api/cache/stats").json()
+            assert stats == {"total": 1, "per_language": [{"lang": "cs", "count": 1}]}
+
+            cleared = client.post("/api/cache/clear", params={"target_language": "cs"})
+            assert cleared.json() == {"deleted": 1}
 
 
 # ---------- Prompt inspection ----------

@@ -1,0 +1,8 @@
+fastapi==0.110.1
+uvicorn==0.25.0
+python-dotenv==1.2.2
+python-multipart==0.0.32
+json-repair==0.62.0
+openai==1.99.9
+anthropic==0.120.2
+google-genai==2.16.0

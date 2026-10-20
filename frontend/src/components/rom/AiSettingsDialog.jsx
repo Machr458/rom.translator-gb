@@ -18,7 +18,7 @@ import {
 } from "@/components/ui/select";
 import { KeyRound, Sparkles, ShieldCheck, PlugZap, Loader2, CheckCircle2, XCircle, Trash2 } from "lucide-react";
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
+const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || "";
 const API = `${BACKEND_URL}/api`;
 
 const STORAGE_KEY = "romtrans.ai_settings";

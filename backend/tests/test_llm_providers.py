@@ -8,7 +8,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from server import OPENAI_COMPATIBLE_BASE_URLS, PROVIDERS, _call_llm
+from server import OPENAI_COMPATIBLE_BASE_URLS, PROVIDERS, _call_llm, get_providers
 
 
 @pytest.mark.parametrize(
@@ -53,3 +53,12 @@ def test_freetheai_catalog_uses_current_free_model_ids():
     assert "fta/ocz/deepseek-v4.1-flash-free" in model_ids
     assert "fta/ocz/nemotron-3.5-lightning-free" in model_ids
     assert not any(model_id.startswith("fta/zai/") for model_id in model_ids)
+
+
+def test_standalone_catalog_hides_unavailable_emergent_provider(monkeypatch):
+    monkeypatch.setenv("DISABLE_EMERGENT_PROVIDER", "1")
+
+    providers = asyncio.run(get_providers())
+
+    assert "emergent" not in providers
+    assert "freetheai" in providers

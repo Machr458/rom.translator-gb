@@ -1,0 +1,28 @@
+[Unit]
+Description=ROM Translator API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=romtrans
+Group=romtrans
+WorkingDirectory=/opt/rom-translator/backend
+Environment=APP_DATA_DIR=/var/lib/rom-translator
+Environment=MAX_PARALLEL=2
+Environment=DISABLE_EMERGENT_PROVIDER=1
+ExecStart=/opt/rom-translator/venv/bin/uvicorn server:app --host 127.0.0.1 --port 8001 --workers 1
+Restart=on-failure
+RestartSec=5
+Nice=10
+CPUWeight=25
+MemoryHigh=384M
+MemoryMax=512M
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/rom-translator
+
+[Install]
+WantedBy=multi-user.target
