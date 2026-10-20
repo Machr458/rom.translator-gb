@@ -329,7 +329,8 @@ def _is_name(text: str, in_table: bool) -> bool:
         return False
     if in_table:
         return True
-    return not any(ch.islower() for ch in p.replace("é", "")) and not re.search(r"[!?]$", p)
+    return (len(p.split()) == 1 and not any(ch.islower() for ch in p.replace("é", ""))
+            and not re.search(r"[!?]$", p))
 
 
 def classify(cands):
@@ -376,9 +377,37 @@ def glossary_for(texts, names, limit: int = 80):
     if not names:
         return []
     blob = "\n".join(plain_text(t) for t in texts)
-    hits = {nm for nm in names if len(nm) >= 3 and nm in blob
-            and re.search(r"(?<![A-Za-z])" + re.escape(nm) + r"(?![A-Za-z])", blob)}
+    hits = {nm for nm in names if len(nm) >= 3
+            and re.search(r"(?<![A-Za-z])" + re.escape(nm) + r"(?![A-Za-z])", blob, re.IGNORECASE)}
     return sorted(hits, key=len, reverse=True)[:limit]
+
+
+def protect_glossary_terms(text: str, names):
+    """Replace detected game names with unique markers, preserving their exact spelling."""
+    replacements = {}
+    protected = text
+    token_index = 0
+    for name in glossary_for([text], names):
+        pattern = re.compile(r"(?<![A-Za-z])" + re.escape(name) + r"(?![A-Za-z])", re.IGNORECASE)
+
+        def replace(match):
+            nonlocal token_index
+            token = f"{{KEEP{token_index:04d}}}"
+            while token in text or token in replacements:
+                token_index += 1
+                token = f"{{KEEP{token_index:04d}}}"
+            token_index += 1
+            replacements[token] = match.group(0)
+            return token
+
+        protected = pattern.sub(replace, protected)
+    return protected, replacements
+
+
+def restore_glossary_terms(text: str, replacements):
+    for token, original in replacements.items():
+        text = text.replace(token, original)
+    return text
 
 
 def detect_gb_encoding(data: bytes, filename: str):

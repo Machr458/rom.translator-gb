@@ -58,14 +58,15 @@ export default function AiSettingsDialog({ open, onOpenChange, providers, settin
 
   useEffect(() => {
     // If model isn't valid for current provider, reset to default
-    if (pInfo && !modelList.find((m) => m.id === model)) {
-      setModel(pInfo.default);
+    const availableModels = providers?.[provider]?.models || [];
+    const defaultModel = providers?.[provider]?.default;
+    if (defaultModel && !availableModels.some((m) => m.id === model)) {
+      setModel(defaultModel);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [provider]);
+  }, [model, provider, providers]);
 
   const handleSave = () => {
-    const finalModel = model || pInfo?.default || "";
+    const finalModel = modelList.some((m) => m.id === model) ? model : pInfo?.default || "";
     // For emergent we now allow an optional user key. For non-emergent providers, key is required.
     const next = { provider, model: finalModel, apiKey: apiKey.trim() };
     saveSettings(next);

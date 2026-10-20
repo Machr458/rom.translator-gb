@@ -119,6 +119,86 @@ class TestTranslateBatchRecursiveSplit:
                 )
 
 
+class TestAutomaticTranslationBatching:
+    def test_batches_respect_item_and_character_limits(self):
+        from server import _build_translation_batches, _group_strings_by_text
+
+        strings = [
+            ExtractedString(id="a1", text="A" * 3000, offset=0, length=3000),
+            ExtractedString(id="a2", text="A" * 3000, offset=3000, length=3000),
+            ExtractedString(id="b", text="B" * 3000, offset=6000, length=3000),
+            ExtractedString(id="c", text="C", offset=9000, length=1),
+        ]
+        groups = _group_strings_by_text(strings)
+        batches = _build_translation_batches(list(groups.values()))
+
+        assert [len(batch) for batch in batches] == [2, 1]
+        assert [item.text for item in batches[0]] == ["A" * 3000, "B" * 3000]
+        assert batches[1][0].text == "C"
+
+        many_short = [
+            ExtractedString(id=f"s{i}", text=f"t{i}", offset=i, length=2)
+            for i in range(61)
+        ]
+        count_limited = _build_translation_batches(list(_group_strings_by_text(many_short).values()))
+        assert [len(batch) for batch in count_limited] == [60, 1]
+
+    def test_worker_translates_only_unique_uncached_texts(self):
+        strings = [
+            ExtractedString(id="a1", text="duplicate", offset=0, length=9),
+            ExtractedString(id="a2", text="duplicate", offset=10, length=9),
+            ExtractedString(id="cached", text="already translated", offset=20, length=18),
+        ]
+        request = server.TranslateRequest(
+            session_id="batch-test",
+            target_language="cs",
+            strings=strings,
+            provider="gemini",
+            api_key="test-key",
+        )
+        translated_batches = []
+        scheduled_workers = []
+
+        class FakeCollection:
+            async def find_one(self, *args, **kwargs):
+                return {}
+
+            async def update_one(self, *args, **kwargs):
+                return None
+
+        class FakeDatabase:
+            rom_sessions = FakeCollection()
+            rom_glossaries = FakeCollection()
+
+        async def fake_cache_lookup(_texts_by_lang):
+            return {("cs", "already translated"): "z cache"}
+
+        async def fake_translate(_lang, batch, *_args):
+            translated_batches.append([item.text for item in batch])
+            return [
+                server.TranslatedString(id=item.id, original=item.text, translated="prelozeno")
+                for item in batch
+            ]
+
+        async def fake_cache_store(_items):
+            return None
+
+        with patch.object(server, "db", FakeDatabase()), \
+                patch.object(server, "_cache_lookup", side_effect=fake_cache_lookup), \
+                patch.object(server, "_translate_batch", side_effect=fake_translate), \
+                patch.object(server, "_cache_store_many", side_effect=fake_cache_store), \
+                patch("asyncio.create_task", side_effect=scheduled_workers.append):
+            response = asyncio.run(server.translate_rom_start(request))
+            asyncio.run(scheduled_workers[0])
+
+        job = server.JOBS.pop(response["job_id"])
+        assert translated_batches == [["duplicate"]]
+        assert job["done"] == 3
+        assert job["cached_count"] == 1
+        assert job["translated_count"] == 3
+        assert {item["id"] for item in job["translations"]} == {"a1", "a2", "cached"}
+
+
 # ---------- Prompt inspection ----------
 class TestPromptRules:
     def test_prompt_forbids_backslash(self):
@@ -154,7 +234,6 @@ class TestStatusEndpointShape:
             "target_language": "es",
             "strings": ext["strings"][:3],
             "provider": "emergent",
-            "batch_size": 10,
         }
         r2 = requests.post(f"{BASE_URL}/api/rom/translate", json=payload)
         assert r2.status_code == 200, r2.text

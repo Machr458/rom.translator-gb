@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="2" skipped="0" tests="10" time="78.616" timestamp="2026-10-16T00:39:04.009527+00:00" hostname="agent-env-2d7d34c9-b488-4bd2-8cc3-d74c0ee74208"><testcase classname="tests.test_iter5_story_cache_patch" name="test_extract[gen1]" time="0.619" /><testcase classname="tests.test_iter5_story_cache_patch" name="test_extract[gen2]" time="0.879" /><testcase classname="tests.test_iter5_story_cache_patch" name="test_extract[gen3]" time="3.065" /><testcase classname="tests.test_iter5_story_cache_patch" name="test_export_header_prefill" time="0.160" /><testcase classname="tests.test_iter5_story_cache_patch" name="test_import[gen1]" time="0.596"><failure message="AssertionError: {'Date': 'Fri, 16 Oct 2026 00:39:09 GMT', 'Content-Type': 'application/octet-stream', 'Content-Length': '1048576', 'Connection': 'keep-alive', ...}&#10;assert '0' == '3'&#10;  &#10;  - 3&#10;  + 0">tests/test_iter5_story_cache_patch.py:82: in test_import
+    assert r.headers["X-Patched-Count"] == "3", dict(r.headers)
+E   AssertionError: {'Date': 'Fri, 16 Oct 2026 00:39:09 GMT', 'Content-Type': 'application/octet-stream', 'Content-Length': '1048576', 'Connection': 'keep-alive', ...}
+E   assert '0' == '3'
+E     
+E     - 3
+E     + 0</failure></testcase><testcase classname="tests.test_iter5_story_cache_patch" name="test_import[gen2]" time="0.853"><failure message="AssertionError: {'Date': 'Fri, 16 Oct 2026 00:39:10 GMT', 'Content-Type': 'application/octet-stream', 'Content-Length': '2097152', 'Connection': 'keep-alive', ...}&#10;assert '0' == '3'&#10;  &#10;  - 3&#10;  + 0">tests/test_iter5_story_cache_patch.py:82: in test_import
+    assert r.headers["X-Patched-Count"] == "3", dict(r.headers)
+E   AssertionError: {'Date': 'Fri, 16 Oct 2026 00:39:10 GMT', 'Content-Type': 'application/octet-stream', 'Content-Length': '2097152', 'Connection': 'keep-alive', ...}
+E   assert '0' == '3'
+E     
+E     - 3
+E     + 0</failure></testcase><testcase classname="tests.test_iter5_story_cache_patch" name="test_patch_decode[gen1]" time="0.440" /><testcase classname="tests.test_iter5_story_cache_patch" name="test_patch_decode[gen2]" time="0.656" /><testcase classname="tests.test_iter5_story_cache_patch" name="test_cache_entry" time="0.725" /><testcase classname="tests.test_iter5_story_cache_patch" name="test_translate_llm" time="70.007" /></testsuite></testsuites>

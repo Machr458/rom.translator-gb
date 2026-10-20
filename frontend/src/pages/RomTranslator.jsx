@@ -44,7 +44,6 @@ export default function RomTranslator() {
   const [encodings, setEncodings] = useState([]);
   const [encoding, setEncoding] = useState("auto");
   const [scanMode, setScanMode] = useState("bytewise");
-  const [batchSize, setBatchSize] = useState(60);
   const [aiSettings, setAiSettings] = useState(loadSettings());
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [targetLang, setTargetLang] = useState("cs");
@@ -161,7 +160,7 @@ export default function RomTranslator() {
     setProgress(2);
     setTranslations(session.strings.map((s) => ({ id: s.id, original: s.text, translated: "" })));
     pushLog(`> TRANSLATE :: target=${targetLang.toUpperCase()} via ${providerLabel()}`, "cmd");
-    pushLog(`  Sending ${session.strings.length} strings in ${Math.ceil(session.strings.length / batchSize)} batch(es) of ${batchSize}...`, "info");
+    pushLog(`  Sending ${session.strings.length} strings; cached and duplicate texts are skipped, batches are automatic...`, "info");
 
     try {
       const r = await axios.post(`${API}/rom/translate`, {
@@ -171,13 +170,17 @@ export default function RomTranslator() {
         provider: aiSettings.provider,
         model: aiSettings.model || providers?.[aiSettings.provider]?.default,
         api_key: aiSettings.apiKey || "",
-        batch_size: batchSize,
       });
       const jobId = r.data.job_id;
       pushLog(`  JOB ${jobId.slice(0, 8)}... running`, "info");
+      let consecutivePollFailures = 0;
+      let pollInFlight = false;
       pollRef.current = setInterval(async () => {
+        if (pollInFlight) return;
+        pollInFlight = true;
         try {
           const s = await axios.get(`${API}/rom/translate/status/${jobId}`);
+          consecutivePollFailures = 0;
           const data = s.data;
           const pct = data.total ? Math.round((data.done / data.total) * 95) + 5 : 10;
           setProgress(pct);
@@ -226,10 +229,18 @@ export default function RomTranslator() {
             }
           }
         } catch (err) {
+          const status = err.response?.status;
+          if ([502, 503, 504].includes(status) && consecutivePollFailures < 5) {
+            consecutivePollFailures += 1;
+            pushLog(`  Poll temporarily unavailable (${status}); retrying ${consecutivePollFailures}/5...`, "info");
+            return;
+          }
           clearInterval(pollRef.current);
           pollRef.current = null;
           setStatus("error");
           pushLog(`! POLL FAILED: ${err.message}`, "err");
+        } finally {
+          pollInFlight = false;
         }
       }, 1500);
     } catch (e) {
@@ -495,25 +506,6 @@ export default function RomTranslator() {
               <SelectItem value="pointers" className="font-mono text-sm" data-testid="scan-mode-option-pointers">
                 Pointer table (GBA only · strictest, fewer texts)
               </SelectItem>
-            </SelectContent>
-          </Select>
-
-          <label className="font-mono text-[10px] uppercase text-neutral-500 tracking-wider mt-5 mb-2 block">
-            Batch Size <span className="text-neutral-600 normal-case tracking-normal">— strings per AI call</span>
-          </label>
-          <Select value={String(batchSize)} onValueChange={(v) => setBatchSize(Number(v))}>
-            <SelectTrigger
-              className="h-11 bg-neutral-950 border-neutral-700 rounded-sm font-mono text-sm"
-              data-testid="batch-size-select"
-            >
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent className="bg-neutral-900 border-neutral-800 rounded-sm">
-              {[20, 60, 120, 200, 300].map((n) => (
-                <SelectItem key={n} value={String(n)} className="font-mono text-sm" data-testid={`batch-size-option-${n}`}>
-                  {n} strings / call {n === 60 ? " · default" : ""}{n >= 200 ? <span className="text-[#C7305C] ml-2">(risk of output truncation)</span> : ""}
-                </SelectItem>
-              ))}
             </SelectContent>
           </Select>
 

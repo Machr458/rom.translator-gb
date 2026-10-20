@@ -9,6 +9,7 @@ import json
 import logging
 import uuid
 import base64
+import unicodedata
 from pathlib import Path
 from pydantic import BaseModel, Field
 from typing import List, Optional, Literal
@@ -26,7 +27,8 @@ from charmaps import (
     count_pokemon_gen3_runs,
     analyze_pokemon_gen3,
 )
-from text_extract import extract_texts, patch_payload, glossary_for, detect_gb_encoding, CODECS, TOKEN_LEGEND, required_tokens
+from text_extract import (extract_texts, patch_payload, protect_glossary_terms,
+                          restore_glossary_terms, detect_gb_encoding, CODECS, TOKEN_LEGEND, required_tokens)
 
 
 ROOT_DIR = Path(__file__).parent
@@ -65,6 +67,32 @@ PROVIDERS = {
         ],
         "default": "gpt-5.4-mini",
     },
+    "groq": {
+        "label": "Groq",
+        "keyHint": "gsk_... from console.groq.com/keys",
+        "models": [
+            {"id": "llama-3.3-70b-versatile", "label": "Llama 3.3 70B (recommended)"},
+            {"id": "llama-3.1-8b-instant", "label": "Llama 3.1 8B (fast)"},
+            {"id": "openai/gpt-oss-120b", "label": "GPT OSS 120B"},
+        ],
+        "default": "llama-3.3-70b-versatile",
+    },
+    "freetheai": {
+        "label": "FreeTheAI",
+        "keyHint": "Create an API key at freetheai.org",
+        "models": [
+            {"id": "fta/ocz/glm-5.3-flash-free", "label": "GLM 5.3 Flash (free)"},
+            {"id": "fta/ocz/deepseek-v4.1-flash-free", "label": "DeepSeek V4.1 Flash (free)"},
+            {"id": "fta/ocz/nemotron-3.5-lightning-free", "label": "Nemotron 3.5 Lightning (free)"},
+            {"id": "fta/ocz/nemotron-3-ultra-free", "label": "Nemotron 3 Ultra (free)"},
+            {"id": "fta/ocz/mimo-v2.6-flash-free", "label": "MiMo V2.6 Flash (free)"},
+            {"id": "fta/ocz/longcat-2.5-preview-free", "label": "LongCat 2.5 Preview (free)"},
+            {"id": "fta/ocz/nemotron-3.5-super-vl-free", "label": "Nemotron 3.5 Super VL (free)"},
+            {"id": "fta/ocz/beam-free", "label": "Beam (free)"},
+            {"id": "fta/ocz/big-pickle", "label": "Big Pickle (free)"},
+        ],
+        "default": "fta/ocz/glm-5.3-flash-free",
+    },
     "anthropic": {
         "label": "Anthropic Claude",
         "keyHint": "sk-ant-... from console.anthropic.com",
@@ -86,6 +114,10 @@ PROVIDERS = {
         ],
         "default": "gemini-3-flash-preview",
     },
+}
+OPENAI_COMPATIBLE_BASE_URLS = {
+    "groq": "https://api.groq.com/openai/v1",
+    "freetheai": "https://api.freetheai.org/v1",
 }
 
 import hashlib
@@ -161,7 +193,7 @@ def _friendly_error(err: str) -> str:
     if code == "EMERGENT_BUDGET_EXCEEDED":
         return ("Emergent Universal Key credit is exhausted. "
                 "Add balance in Profile → Manage plan → Universal Key, "
-                "or open Settings and switch to your own AI provider (Gemini / OpenAI / Anthropic).")
+                "or open Settings and switch to your own AI provider (Gemini / OpenAI / Anthropic / Groq / FreeTheAI).")
     if code == "QUOTA_EXCEEDED":
         return ("The selected provider's free-tier quota is used up for today. "
                 "Open Settings and try a different provider or wait until the quota resets.")
@@ -199,7 +231,6 @@ class TranslateRequest(BaseModel):
     provider: Optional[str] = "emergent"     # gemini | openai | anthropic | emergent
     model: Optional[str] = None              # provider-specific model id (falls back to provider default)
     api_key: Optional[str] = None            # user's own key (empty -> use server default when provider=emergent)
-    batch_size: Optional[int] = None         # strings per single LLM call (defaults to DEFAULT_BATCH_SIZE)
 
 class TranslatedString(BaseModel):
     id: str
@@ -243,11 +274,37 @@ MIN_STRING_LEN = 4
 DEFAULT_MAX_STRINGS = 500     # sensible default per extract
 HARD_MAX_STRINGS = 100000     # hard cap regardless of user choice (protects RAM)
 UNLIMITED_SENTINEL = 0        # 0 or negative == "no user cap; use HARD_MAX_STRINGS"
-DEFAULT_BATCH_SIZE = 60       # strings per single LLM call (bigger = fewer calls / cheaper / faster)
-MAX_BATCH_SIZE = 300          # upper limit to protect against output token truncation
+MAX_BATCH_STRINGS = 60
+MAX_BATCH_CHARS = 6000
 MAX_PARALLEL = 8              # parallel batch calls
 LLM_TIMEOUT = 150             # seconds per LLM call (thinking models answer slowly on big batches)
 PRINTABLE_RE = re.compile(rb"[\x20-\x7E]{%d,}" % MIN_STRING_LEN)
+
+
+def _group_strings_by_text(strings: List[ExtractedString]) -> dict:
+    groups = {}
+    for item in strings:
+        groups.setdefault(item.text, []).append(item)
+    return groups
+
+
+def _build_translation_batches(groups: List[List[ExtractedString]]) -> List[List[ExtractedString]]:
+    batches = []
+    batch = []
+    batch_chars = 0
+    for group in groups:
+        if not group:
+            continue
+        item = group[0]
+        if batch and (len(batch) >= MAX_BATCH_STRINGS or batch_chars + len(item.text) > MAX_BATCH_CHARS):
+            batches.append(batch)
+            batch = []
+            batch_chars = 0
+        batch.append(item)
+        batch_chars += len(item.text)
+    if batch:
+        batches.append(batch)
+    return batches
 
 
 def detect_rom_type(filename: str, size: int) -> str:
@@ -518,6 +575,24 @@ def _allowed_chars(encoding: str) -> set:
     return set(c.enc_single) if c else set()
 
 
+def _sanitize_translation(text: str, encoding: str) -> str:
+    allowed = _allowed_chars(encoding)
+    punctuation = {"‘": "'", "’": "'", "“": '"', "”": '"', "–": "-", "—": "-", "−": "-", "…": "...", "·": ".", "×": "x"}
+    result = []
+    for char in text:
+        if 0x20 <= ord(char) <= 0x7E or char in allowed:
+            result.append(char)
+        elif char in punctuation:
+            result.append(punctuation[char])
+        else:
+            base = "".join(c for c in unicodedata.normalize("NFKD", char) if c.isascii() and c.isalnum())
+            if base:
+                result.append(base)
+            elif char.isspace():
+                result.append(" ")
+    return "".join(result)
+
+
 def _build_translation_prompt(target_lang_name: str, strings: List[ExtractedString], encoding: str = "ascii", glossary: Optional[list] = None) -> str:
     extra = EXTRA_CHARS.get(encoding)
     charset_rule = (
@@ -552,7 +627,7 @@ def _build_translation_prompt(target_lang_name: str, strings: List[ExtractedStri
         f"{{PLAYER}}, {{RIVAL}}, {{STR1}}, {{FC:01:02}}. They are NOT words: never translate, rename, remove or add them. "
         f"Every variable/command token (anything other than {{n}} {{l}} {{p}}) must appear in the translation exactly as many times as in the original. "
         f"You may move line-break tokens to re-wrap a sentence, but keep each line no longer than the longest line of the original. "
-        f"Words in ALL CAPS are game terms/names — keep them unchanged.\n"
+        f"Words in ALL CAPS are game terms/names — keep them unchanged. Protected name markers like {{KEEP0000}} must also remain exactly unchanged.\n"
         f"{gloss_rule}\n"
         f"INPUT (one JSON object per line):\n{joined}\n\n"
         f"OUTPUT: JSON array only, well-formed."
@@ -586,13 +661,16 @@ async def _call_llm(prompt: str, provider: str, model: Optional[str], api_key: O
         except Exception as e:
             raise HTTPException(status_code=502, detail=f"Gemini error: {(str(e) or type(e).__name__)[:300]}")
 
-    # --- OpenAI via official SDK ---
-    if provider == "openai":
+    # --- OpenAI-compatible APIs via official SDK ---
+    if provider in {"openai", *OPENAI_COMPATIBLE_BASE_URLS}:
         key = api_key
         if not key:
-            raise HTTPException(status_code=400, detail="OpenAI API key missing")
+            raise HTTPException(status_code=400, detail=f"{PROVIDERS[provider]['label']} API key missing")
         from openai import AsyncOpenAI
-        client_ = AsyncOpenAI(api_key=key)
+        client_args = {"api_key": key}
+        if provider in OPENAI_COMPATIBLE_BASE_URLS:
+            client_args["base_url"] = OPENAI_COMPATIBLE_BASE_URLS[provider]
+        client_ = AsyncOpenAI(**client_args)
         try:
             resp = await asyncio.wait_for(
                 client_.chat.completions.create(
@@ -606,7 +684,8 @@ async def _call_llm(prompt: str, provider: str, model: Optional[str], api_key: O
             )
             return resp.choices[0].message.content or ""
         except Exception as e:
-            raise HTTPException(status_code=502, detail=f"OpenAI error: {(str(e) or type(e).__name__)[:300]}")
+            label = PROVIDERS[provider]["label"]
+            raise HTTPException(status_code=502, detail=f"{label} error: {(str(e) or type(e).__name__)[:300]}")
 
     # --- Anthropic Claude via official SDK ---
     if provider == "anthropic":
@@ -664,7 +743,7 @@ async def _call_llm(prompt: str, provider: str, model: Optional[str], api_key: O
             if "budget has been exceeded" in low or "max budget" in low:
                 raise HTTPException(
                     status_code=402,
-                    detail="EMERGENT_BUDGET_EXCEEDED: Emergent Universal Key credit was used up. Add balance in Profile → Manage plan → Universal Key, or switch to your own API key (Gemini / OpenAI / Anthropic) in Settings.",
+                    detail="EMERGENT_BUDGET_EXCEEDED: Emergent Universal Key credit was used up. Add balance in Profile → Manage plan → Universal Key, or switch to your own API key (Gemini / OpenAI / Anthropic / Groq / FreeTheAI) in Settings.",
                 )
             raise HTTPException(status_code=502, detail=f"Emergent error: {msg[:300]}")
 
@@ -684,27 +763,26 @@ async def _translate_batch(
     if not batch:
         return []
 
-    glossary = glossary_for([s.text for s in batch], names or set())
-    prompt = _build_translation_prompt(target_lang_name, batch, encoding, glossary)
+    protected_batch = []
+    protected_terms = {}
+    for item in batch:
+        protected_text, replacements = protect_glossary_terms(item.text, names or set())
+        protected_batch.append(item.model_copy(update={"text": protected_text}))
+        protected_terms[item.id] = replacements
+    prompt = _build_translation_prompt(target_lang_name, protected_batch, encoding)
 
-    # Try primary provider, auto-fallback to Emergent Universal Key on quota / upstream errors
+    # Honor the selected provider; never spend the app's Emergent balance as an implicit fallback.
     try:
         text = (await _call_llm(prompt, provider, model, api_key)).strip()
     except HTTPException as e:
         msg = str(e.detail).lower()
-        is_quota = ("429" in msg or "resource_exhausted" in msg or "quota" in msg or "rate" in msg)
-        is_upstream = e.status_code in (502, 503, 504)
         if "timeout" in msg and len(batch) > 3 and _depth < 3:
             mid = len(batch) // 2
             logging.warning(f"LLM timeout at depth={_depth}, splitting batch of {len(batch)}")
             left = await _translate_batch(target_lang_name, batch[:mid], provider, model, api_key, _depth + 1, encoding, names)
             right = await _translate_batch(target_lang_name, batch[mid:], provider, model, api_key, _depth + 1, encoding, names)
             return left + right
-        if provider != "emergent" and EMERGENT_LLM_KEY and (is_quota or is_upstream):
-            logging.warning(f"Primary {provider} failed ({e.detail[:120]}), falling back to Emergent")
-            text = (await _call_llm(prompt, "emergent", None, None)).strip()
-        else:
-            raise
+        raise
 
     # Strip code fences if present
     if text.startswith("```"):
@@ -725,13 +803,16 @@ async def _translate_batch(
 
     by_id = {p.get("id"): p.get("translated", "") for p in parsed if isinstance(p, dict)}
     results = []
+    protected_by_id = {item.id: item for item in protected_batch}
     for s in batch:
-        tr = by_id.get(s.id, s.text)
-        allowed = _allowed_chars(encoding)
-        tr = "".join(ch if 0x20 <= ord(ch) <= 0x7E or ch in allowed else "?" for ch in tr)
-        if required_tokens(tr) != required_tokens(s.text):
+        protected_source = protected_by_id[s.id].text
+        tr = by_id.get(s.id, protected_source)
+        tr = _sanitize_translation(tr, encoding)
+        if required_tokens(tr) != required_tokens(protected_source):
             logging.warning(f"Token mismatch, keeping original: {s.text[:60]!r}")
             tr = s.text
+        else:
+            tr = restore_glossary_terms(tr, protected_terms[s.id])
         results.append(TranslatedString(id=s.id, original=s.text, translated=tr))
     return results
 
@@ -852,10 +933,8 @@ async def translate_rom_start(req: TranslateRequest):
             JOBS[job_id]["translations"].extend([t.model_dump() for t in cached_out])
             logging.info(f"Cache hits: {len(cached_out)}/{len(req.strings)}")
 
-        # Clamp user-requested batch_size into [10 .. MAX_BATCH_SIZE]
-        bs = req.batch_size or DEFAULT_BATCH_SIZE
-        bs = min(max(bs, 10), MAX_BATCH_SIZE)
-        batches = [remaining[i:i + bs] for i in range(0, len(remaining), bs)]
+        remaining_groups = _group_strings_by_text(remaining)
+        batches = _build_translation_batches(list(remaining_groups.values()))
         sem = asyncio.Semaphore(MAX_PARALLEL)
         abort_flag = {"stop": False, "reason": None}
 
@@ -864,17 +943,31 @@ async def translate_rom_start(req: TranslateRequest):
                 # Fail fast: if a prior batch hit a fatal error like budget exhaustion,
                 # skip remaining batches instead of wasting time / retries.
                 if abort_flag["stop"]:
-                    out = [TranslatedString(id=s.id, original=s.text, translated=s.text) for s in batch]
-                    JOBS[job_id]["failed_count"] += len(batch)
-                    JOBS[job_id]["done"] += len(batch)
+                    out = [
+                        TranslatedString(id=item.id, original=item.text, translated=item.text)
+                        for representative in batch
+                        for item in remaining_groups[representative.text]
+                    ]
+                    JOBS[job_id]["failed_count"] += len(out)
+                    JOBS[job_id]["done"] += len(out)
                     JOBS[job_id]["translations"].extend([t.model_dump() for t in out])
                     return out
 
                 failed = False
                 err_msg = None
                 try:
-                    out = await _translate_batch(lang_name, batch, provider, req.model, req.api_key, 0, job_encoding, job_names)
-                    real_translated = sum(1 for t, s in zip(out, batch) if t.translated != s.text)
+                    unique_out = await _translate_batch(lang_name, batch, provider, req.model, req.api_key, 0, job_encoding, job_names)
+                    translated_by_text = {t.original: t.translated for t in unique_out}
+                    out = [
+                        TranslatedString(
+                            id=item.id,
+                            original=item.text,
+                            translated=translated_by_text.get(representative.text, item.text),
+                        )
+                        for representative in batch
+                        for item in remaining_groups[representative.text]
+                    ]
+                    real_translated = sum(1 for t in out if t.translated != t.original)
                     JOBS[job_id]["translated_count"] += real_translated
                     # === CACHE STORE: persist successful translations ===
                     to_store = [
@@ -884,7 +977,7 @@ async def translate_rom_start(req: TranslateRequest):
                             "translated": t.translated,
                             "target_lang": req.target_language,
                         }
-                        for t, s in zip(out, batch)
+                        for t, s in zip(unique_out, batch)
                         if t.translated and t.translated != s.text
                     ]
                     if to_store:
@@ -893,8 +986,12 @@ async def translate_rom_start(req: TranslateRequest):
                     failed = True
                     err_msg = str(getattr(e, "detail", None) or e)[:250]
                     logging.warning(f"Batch failed: {err_msg}")
-                    out = [TranslatedString(id=s.id, original=s.text, translated=s.text) for s in batch]
-                    JOBS[job_id]["failed_count"] += len(batch)
+                    out = [
+                        TranslatedString(id=item.id, original=item.text, translated=item.text)
+                        for representative in batch
+                        for item in remaining_groups[representative.text]
+                    ]
+                    JOBS[job_id]["failed_count"] += len(out)
                     low = err_msg.lower()
                     if ("emergent_budget_exceeded" in low
                         or "budget has been exceeded" in low
@@ -903,7 +1000,7 @@ async def translate_rom_start(req: TranslateRequest):
                         or "api key missing" in low):
                         abort_flag["stop"] = True
                         abort_flag["reason"] = err_msg
-                JOBS[job_id]["done"] += len(batch)
+                JOBS[job_id]["done"] += len(out)
                 JOBS[job_id]["translations"].extend([t.model_dump() for t in out])
                 if failed and err_msg and err_msg not in JOBS[job_id]["errors"]:
                     JOBS[job_id]["errors"].append(err_msg)
