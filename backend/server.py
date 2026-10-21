@@ -147,23 +147,24 @@ PROVIDERS = {
         "label": "Google Gemini",
         "keyHint": "AIza... (Google AI Studio) or your project key",
         "models": [
+            {"id": "gemini-3.8-flash", "label": "Gemini 3.8 Flash (recommended)", "pricing": {"input": 0.75, "output": 3.75}},
+            {"id": "gemini-3.5-flash-lite", "label": "Gemini 3.5 Flash-Lite (efficient for translation)", "pricing": {"input": 0.30, "output": 2.50}},
             {"id": "gemini-3.1-pro-preview", "label": "Gemini 3.1 Pro (best quality)", "pricing": {"input": 1.25, "output": 10.0}},
-            {"id": "gemini-3-flash-preview", "label": "Gemini 3 Flash (fast, cheap)", "pricing": {"input": 0.075, "output": 0.30}},
-            {"id": "gemini-2.5-pro", "label": "Gemini 2.5 Pro", "pricing": {"input": 1.25, "output": 10.0}},
-            {"id": "gemini-2.5-flash", "label": "Gemini 2.5 Flash", "pricing": {"input": 0.075, "output": 0.30}},
         ],
-        "default": "gemini-3-flash-preview",
+        "default": "gemini-3.8-flash",
     },
     "openai": {
         "label": "OpenAI",
         "keyHint": "sk-... from platform.openai.com",
         "models": [
-            {"id": "gpt-5.4", "label": "GPT-5.4 (recommended)", "pricing": {"input": 1.25, "output": 10.0}},
+            {"id": "gpt-6.1-sol", "label": "GPT-6.1 Sol (higher quality)", "pricing": {"input": 2.0, "output": 10.0}},
+            {"id": "gpt-6-luna", "label": "GPT-6 Luna (recommended, efficient)", "pricing": {"input": 0.10, "output": 0.50}},
+            {"id": "gpt-5.4", "label": "GPT-5.4", "pricing": {"input": 1.25, "output": 10.0}},
             {"id": "gpt-5.4-mini", "label": "GPT-5.4 Mini (fast)", "pricing": {"input": 0.15, "output": 0.60}},
             {"id": "gpt-5", "label": "GPT-5", "pricing": {"input": 1.25, "output": 10.0}},
             {"id": "gpt-4o", "label": "GPT-4o", "pricing": {"input": 2.50, "output": 10.0}},
         ],
-        "default": "gpt-5.4-mini",
+        "default": "gpt-6-luna",
     },
     "groq": {
         "label": "Groq",
@@ -207,6 +208,7 @@ PROVIDERS = {
         "models": [
             {"id": "gemini-3-flash-preview", "label": "Gemini 3 Flash (via Emergent)", "pricing": {"input": 0.10, "output": 0.40}},
             {"id": "gemini-3.1-pro-preview", "label": "Gemini 3.1 Pro (via Emergent)", "pricing": {"input": 1.30, "output": 10.5}},
+            {"id": "gemini-2.5-flash", "label": "Gemini 2.5 Flash (via Emergent)", "pricing": {"input": 0.10, "output": 0.40}},
             {"id": "gpt-5.4-mini", "label": "GPT-5.4 Mini (via Emergent)", "pricing": {"input": 0.20, "output": 0.70}},
             {"id": "claude-sonnet-4-6", "label": "Claude Sonnet 4.6 (via Emergent)", "pricing": {"input": 3.10, "output": 15.5}},
         ],
@@ -292,7 +294,7 @@ def _error_code(err: str) -> str:
     if "emergent_budget_exceeded" in low or "budget has been exceeded" in low or "max budget" in low:
         return "EMERGENT_BUDGET_EXCEEDED"
     # Check INVALID_KEY before QUOTA to avoid false 'rate' match inside 'gene-rate'
-    if ("invalid api key" in low or "unauthorized" in low or "api key missing" in low
+    if ("invalid api key" in low or "api key not valid" in low or "unauthorized" in low or "api key missing" in low
             or "authenticationerror" in low or "invalid_api_key" in low):
         return "INVALID_KEY"
     if ("resource_exhausted" in low or " 429" in low or "quota" in low
@@ -313,7 +315,7 @@ def _friendly_error(err: str) -> str:
         return ("The selected provider's free-tier quota is used up for today. "
                 "Open Settings and try a different provider or wait until the quota resets.")
     if code == "INVALID_KEY":
-        return ("The API key was rejected. Open Settings and re-enter a valid key, "
+        return ("The API key was rejected. Open Settings and enter a valid key from Google AI Studio, "
                 "or switch to the Emergent Universal Key.")
     if code == "TIMEOUT":
         return "The AI provider timed out. Try again, or switch to a faster model in Settings."
@@ -479,8 +481,96 @@ def extract_story(data: bytes, encoding: str, scan_mode: str = "bytewise"):
     return strings, names, occ
 
 
+GBA_MAX_ROM_SIZE = 32 * 1024 * 1024
+
+
+def _find_gba_pointer_references(data: bytearray, targets: set) -> dict:
+    references = {offset: [] for offset in targets}
+    for high_byte in (0x08, 0x09):
+        marker = bytes([high_byte])
+        position = data.find(marker, 3)
+        while position >= 3:
+            offset = (
+                data[position - 3]
+                | (data[position - 2] << 8)
+                | (data[position - 1] << 16)
+                | ((high_byte - 0x08) << 24)
+            )
+            if offset in references:
+                references[offset].append(position - 3)
+            position = data.find(marker, position + 1)
+    return references
+
+
+def _apply_gen3_translations(data: bytearray, occ: dict, pairs) -> int:
+    codec = CODECS["pokemon_gen3"]
+    prepared = []
+    expansion_targets = set()
+    for original, translated in pairs:
+        if not translated or translated.strip() == original.strip() or original not in occ:
+            continue
+        encoded = codec.encode(translated)
+        locations = []
+        for offset, length in occ[original]:
+            terminator = data[offset + length] if offset + length < len(data) else 0xFF
+            locations.append((offset, length, terminator))
+            if len(encoded) > length:
+                expansion_targets.add(offset)
+        prepared.append((translated, encoded, locations))
+
+    references = _find_gba_pointer_references(data, expansion_targets)
+    cursor = (len(data) + 3) & ~3
+    patched = 0
+    changed = False
+
+    for translated, encoded, locations in prepared:
+        string_changed = False
+        for offset, length, terminator in locations:
+            if len(encoded) <= length:
+                payload = patch_payload("pokemon_gen3", translated, length, terminator)
+                data[offset:offset + len(payload)] = payload
+                string_changed = changed = True
+                continue
+
+            sites = references.get(offset, [])
+            payload = encoded + bytes([terminator])
+            end = cursor + len(payload)
+            if not sites or end > GBA_MAX_ROM_SIZE:
+                logging.warning(
+                    "Leaving oversized Gen3 text unchanged at %#x: %s",
+                    offset,
+                    "no direct GBA pointers found" if not sites else "32 MiB ROM limit reached",
+                )
+                continue
+
+            if cursor > len(data):
+                data.extend(b"\xff" * (cursor - len(data)))
+            if end > len(data):
+                data.extend(b"\xff" * (end - len(data)))
+            data[cursor:end] = payload
+            pointer = (0x08000000 + cursor).to_bytes(4, "little")
+            for site in sites:
+                data[site:site + 4] = pointer
+            cursor = (end + 3) & ~3
+            string_changed = changed = True
+
+        if string_changed:
+            patched += 1
+
+    if changed:
+        padded_size = 1 << (len(data) - 1).bit_length()
+        if padded_size <= GBA_MAX_ROM_SIZE and padded_size > len(data):
+            data.extend(b"\xff" * (padded_size - len(data)))
+        if len(data) > 0xBD:
+            data[0xBD] = (-sum(data[0xA0:0xBD]) - 0x19) & 0xFF
+    return patched
+
+
 def apply_translations(data: bytearray, encoding: str, occ: dict, pairs) -> int:
-    """Write (original, translated) pairs into every occurrence of the original text."""
+    """Write translations in place, relocating oversized Gen3 strings when referenced."""
+    if encoding == "pokemon_gen3":
+        return _apply_gen3_translations(data, occ, pairs)
+
     patched = 0
     for orig, tran in pairs:
         if not tran or tran.strip() == orig.strip() or orig not in occ:
@@ -527,6 +617,10 @@ async def get_languages():
 @api_router.get("/providers")
 async def get_providers():
     providers = dict(PROVIDERS)
+    providers["gemini"] = {
+        **PROVIDERS["gemini"],
+        "serverKeyAvailable": bool(GEMINI_API_KEY),
+    }
     if os.environ.get("DISABLE_EMERGENT_PROVIDER") == "1":
         providers.pop("emergent", None)
     return providers
@@ -730,8 +824,8 @@ def _build_translation_prompt(target_lang_name: str, strings: List[ExtractedStri
         f"You are a professional video game localizer. Translate the following in-game texts extracted from a Gameboy ROM "
         f"into {target_lang_name}.\n\n"
         f"IMPORTANT RULES:\n"
-        f"1. Keep translations concise. Try to match the ORIGINAL LENGTH in characters — game text often has fixed buffers. "
-        f"If the translation would be longer, abbreviate naturally to fit within the original length.\n"
+        f"1. Translate the complete meaning, including every clause. Be concise when natural, but do not omit content "
+        f"or shorten the translation just to match the original length.\n"
         f"2. Preserve punctuation and any leading/trailing spaces exactly.\n"
         f"3. Do NOT translate obvious code identifiers, file names, register names, or gibberish (return them unchanged).\n"
         f"{charset_rule}"
@@ -925,7 +1019,23 @@ async def _translate_batch(
             return left + right
         raise HTTPException(status_code=502, detail="Translator returned invalid JSON")
 
-    by_id = {p.get("id"): p.get("translated", "") for p in parsed if isinstance(p, dict)}
+    by_id = {
+        p.get("id"): p.get("translated")
+        for p in parsed
+        if isinstance(p, dict) and isinstance(p.get("id"), str)
+    }
+    missing = [s.id for s in batch if not isinstance(by_id.get(s.id), str) or not by_id[s.id].strip()]
+    if missing:
+        if len(batch) > 3 and _depth < 3:
+            mid = len(batch) // 2
+            logging.warning(
+                f"Translator omitted or returned empty text for {len(missing)}/{len(batch)} items; splitting batch"
+            )
+            left = await _translate_batch(target_lang_name, batch[:mid], provider, model, api_key, _depth + 1, encoding, names)
+            right = await _translate_batch(target_lang_name, batch[mid:], provider, model, api_key, _depth + 1, encoding, names)
+            return left + right
+        raise HTTPException(status_code=502, detail="Translator omitted or returned empty translations")
+
     results = []
     protected_by_id = {item.id: item for item in protected_batch}
     for s in batch:
@@ -1010,9 +1120,10 @@ async def translate_rom_start(req: TranslateRequest):
     provider = (req.provider or "emergent").lower()
     if provider not in PROVIDERS:
         raise HTTPException(status_code=400, detail="Unknown provider")
-    # For non-emergent providers a user key is mandatory.
+    # Providers may use their own key; Gemini can also use the server-configured key.
     # For emergent, an optional user key overrides the server key (to bypass the pod-scoped free-tier cap).
-    if provider != "emergent" and not req.api_key:
+    if (provider != "emergent" and not req.api_key
+            and not (provider == "gemini" and GEMINI_API_KEY)):
         raise HTTPException(status_code=400, detail=f"API key required for provider '{provider}'")
 
     import asyncio

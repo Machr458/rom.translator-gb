@@ -236,6 +236,16 @@ class TestSQLiteEndpoints:
 
 # ---------- Prompt inspection ----------
 class TestPromptRules:
+    def test_prompt_does_not_ask_ai_to_shorten_translations(self):
+        from server import _build_translation_prompt
+        p = _build_translation_prompt("Czech", [ExtractedString(
+            id="s1", text="h{USER}CONTINUE, TIME NOT SET", offset=0, length=29
+        )])
+
+        assert "translate the complete meaning, including every clause" in p.lower()
+        assert "do not omit content" in p.lower()
+        assert "abbreviate naturally to fit within the original length" not in p.lower()
+
     def test_prompt_forbids_backslash(self):
         from server import _build_translation_prompt
         p = _build_translation_prompt("Spanish", [ExtractedString(id="s1", text="hi", offset=0, length=2)])

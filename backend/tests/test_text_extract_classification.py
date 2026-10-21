@@ -73,3 +73,32 @@ def test_translation_protects_detected_names_exactly():
             loop.close()
 
     assert translated[0].translated == "Pouzil Pikachu Tackle Potion."
+
+
+def test_missing_model_rows_are_retried_in_smaller_batches():
+    from server import ExtractedString, _translate_batch
+
+    batch = [
+        ExtractedString(id=f"id-{i}", offset=i, length=11, text=f"Original {i}")
+        for i in range(4)
+    ]
+    calls = []
+
+    async def fake_call(prompt, provider, model, api_key):
+        ids = re.findall(r'"id":"([^"]+)"', prompt)
+        calls.append(ids)
+        if len(ids) == 4:
+            return json.dumps([{"id": ids[0], "translated": "Prvni"}])
+        return json.dumps([{"id": item_id, "translated": f"Preklad {item_id}"} for item_id in ids])
+
+    loop = asyncio.new_event_loop()
+    try:
+        with patch("server._call_llm", side_effect=fake_call):
+            result = loop.run_until_complete(_translate_batch(
+                "Czech", batch, "freetheai", "test-model", "test-key"
+            ))
+    finally:
+        loop.close()
+
+    assert [len(call) for call in calls] == [4, 2, 2]
+    assert [item.translated for item in result] == [f"Preklad id-{i}" for i in range(4)]

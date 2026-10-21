@@ -9,6 +9,7 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from server import OPENAI_COMPATIBLE_BASE_URLS, PROVIDERS, _call_llm, get_providers
+import server as server_module
 
 
 @pytest.mark.parametrize(
@@ -41,9 +42,32 @@ def test_openai_compatible_provider_dispatch(provider, model, base_url):
 def test_new_provider_defaults_are_listed():
     assert OPENAI_COMPATIBLE_BASE_URLS["groq"] == "https://api.groq.com/openai/v1"
     assert OPENAI_COMPATIBLE_BASE_URLS["freetheai"] == "https://api.freetheai.org/v1"
+    openai_models = {model["id"] for model in PROVIDERS["openai"]["models"]}
+    assert PROVIDERS["openai"]["default"] == "gpt-6-luna"
+    assert {"gpt-6.1-sol", "gpt-6-luna"} <= openai_models
     for provider in ("groq", "freetheai"):
         info = PROVIDERS[provider]
         assert info["default"] in {model["id"] for model in info["models"]}
+    emergent_models = {model["id"] for model in PROVIDERS["emergent"]["models"]}
+    assert "gemini-2.5-flash" in emergent_models
+
+
+def test_gemini_catalog_uses_current_google_models():
+    info = PROVIDERS["gemini"]
+    model_ids = {model["id"] for model in info["models"]}
+
+    assert info["default"] == "gemini-3.8-flash"
+    assert "gemini-3.8-flash" in model_ids
+    assert "gemini-3.5-flash-lite" in model_ids
+    assert "gemini-2.5-flash" not in model_ids
+
+
+def test_gemini_catalog_reports_server_key_availability(monkeypatch):
+    monkeypatch.setattr(server_module, "GEMINI_API_KEY", "configured-test-key")
+
+    providers = asyncio.run(get_providers())
+
+    assert providers["gemini"]["serverKeyAvailable"] is True
 
 
 def test_freetheai_catalog_uses_current_free_model_ids():

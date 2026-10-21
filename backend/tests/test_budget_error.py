@@ -47,6 +47,7 @@ class TestErrorMappingHelpers:
     def test_error_code_invalid_key(self):
         from server import _error_code
         assert _error_code("Invalid API key provided") == "INVALID_KEY"
+        assert _error_code("API key not valid. Please pass a valid API key.") == "INVALID_KEY"
         assert _error_code("Unauthorized") == "INVALID_KEY"
 
     def test_error_code_timeout(self):
@@ -73,8 +74,8 @@ class TestErrorMappingHelpers:
 
     def test_friendly_invalid_key(self):
         from server import _friendly_error
-        msg = _friendly_error("Invalid API key").lower()
-        assert "settings" in msg or "key" in msg
+        msg = _friendly_error("API key not valid").lower()
+        assert "settings" in msg and "google ai studio" in msg
 
     def test_friendly_timeout(self):
         from server import _friendly_error

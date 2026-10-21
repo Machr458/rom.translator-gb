@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 KIND="${1:-update}"
-VERSION="${APP_VERSION:-1.0}"
+VERSION="${APP_VERSION:-1.1}"
 
 if [[ "$KIND" != "install" && "$KIND" != "update" ]]; then
   echo "Usage: bash deploy/raspberry-pi/package.sh [install|update]" >&2
@@ -12,7 +12,7 @@ if [[ "$KIND" != "install" && "$KIND" != "update" ]]; then
 fi
 
 if [[ ! "$VERSION" =~ ^[0-9]+([.][0-9]+)*$ ]]; then
-  echo "APP_VERSION must contain numbers separated by dots, for example 1.0." >&2
+  echo "APP_VERSION must contain numbers separated by dots, for example 1.1." >&2
   exit 2
 fi
 

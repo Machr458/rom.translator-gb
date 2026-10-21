@@ -147,7 +147,8 @@ export default function RomTranslator() {
 
   const translate = async () => {
     if (!session) return;
-    if (aiSettings.provider !== "emergent" && !aiSettings.apiKey) {
+    if (aiSettings.provider !== "emergent" && !aiSettings.apiKey
+      && !providers?.[aiSettings.provider]?.serverKeyAvailable) {
       toast.error("Enter an API key in Settings before translating.");
       return;
     }
