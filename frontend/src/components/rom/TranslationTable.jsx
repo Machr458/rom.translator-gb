@@ -3,7 +3,8 @@ import { EditableCell } from "@/components/rom/EditableCell";
 
 const PAGE_SIZE = 200;
 
-export default function TranslationTable({ strings, translations, onEdit, encoding }) {
+export default function TranslationTable({ strings, translations, onEdit, encoding, language = "en" }) {
+  const cs = language === "cs";
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   const [query, setQuery] = useState("");
 
@@ -34,7 +35,7 @@ export default function TranslationTable({ strings, translations, onEdit, encodi
   if (!strings.length) {
     return (
       <div className="p-8 text-center font-mono text-xs text-neutral-500" data-testid="empty-viewer">
-        Load a ROM and select SCAN & EXTRACT to see its strings here.
+        {cs ? "Načti ROM a spusť skenování, aby se zde zobrazily její texty." : "Load a ROM and scan it to see its strings here."}
       </div>
     );
   }
@@ -47,7 +48,7 @@ export default function TranslationTable({ strings, translations, onEdit, encodi
           type="text"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="Filter strings..."
+          placeholder={cs ? "Filtrovat texty…" : "Filter strings…"}
           className="flex-1 h-8 bg-neutral-900 border border-neutral-800 rounded-sm px-3 font-mono text-xs placeholder:text-neutral-600 focus:outline-none focus:border-[#8BAC0F]"
           data-testid="table-search"
         />
@@ -63,9 +64,9 @@ export default function TranslationTable({ strings, translations, onEdit, encodi
         <table className="w-full text-sm">
           <thead className="sticky top-0 bg-neutral-900 border-b border-neutral-800">
             <tr>
-              <th className="text-left px-4 py-2.5 font-mono text-[10px] uppercase text-neutral-500 tracking-widest w-16">Addr</th>
-              <th className="text-left px-4 py-2.5 font-mono text-[10px] uppercase text-neutral-500 tracking-widest w-[45%]">Original</th>
-              <th className="text-left px-4 py-2.5 font-mono text-[10px] uppercase text-neutral-500 tracking-widest border-l border-neutral-800">Translated</th>
+              <th className="text-left px-4 py-2.5 font-mono text-[10px] uppercase text-neutral-500 tracking-widest w-16">{cs ? "Adresa" : "Address"}</th>
+              <th className="text-left px-4 py-2.5 font-mono text-[10px] uppercase text-neutral-500 tracking-widest w-[45%]">{cs ? "Originál" : "Original"}</th>
+              <th className="text-left px-4 py-2.5 font-mono text-[10px] uppercase text-neutral-500 tracking-widest border-l border-neutral-800">{cs ? "Překlad" : "Translation"}</th>
             </tr>
           </thead>
           <tbody>
@@ -89,6 +90,7 @@ export default function TranslationTable({ strings, translations, onEdit, encodi
                       maxLen={s.length}
                       index={i}
                       encoding={encoding}
+                      language={language}
                       onSave={(text) => onEdit?.(s, text)}
                     />
                   </td>
@@ -102,7 +104,9 @@ export default function TranslationTable({ strings, translations, onEdit, encodi
       {remaining > 0 && (
         <div className="px-4 py-3 border-t border-neutral-800 flex items-center justify-between font-mono text-xs">
           <span className="text-neutral-500">
-            {remaining.toLocaleString()} more strings hidden. Showing first {rowsToRender.length.toLocaleString()} for performance.
+            {cs
+              ? `Skryto dalších ${remaining.toLocaleString()} textů. Zobrazeno prvních ${rowsToRender.length.toLocaleString()} kvůli výkonu.`
+              : `${remaining.toLocaleString()} more strings hidden. Showing first ${rowsToRender.length.toLocaleString()} for performance.`}
           </span>
           <div className="flex gap-2">
             <button
@@ -110,7 +114,7 @@ export default function TranslationTable({ strings, translations, onEdit, encodi
               className="h-8 px-3 border border-neutral-700 hover:border-[#8BAC0F] rounded-sm text-neutral-300 hover:text-[#9BBC0F] transition-colors text-[11px] uppercase tracking-wider"
               data-testid="load-more-btn"
             >
-              +{PAGE_SIZE} more
+                {cs ? `Načíst dalších ${PAGE_SIZE}` : `Load ${PAGE_SIZE} more`}
             </button>
             {filtered.length <= 5000 && (
               <button
@@ -118,7 +122,7 @@ export default function TranslationTable({ strings, translations, onEdit, encodi
                 className="h-8 px-3 border border-neutral-700 hover:border-[#8BAC0F] rounded-sm text-neutral-300 hover:text-[#9BBC0F] transition-colors text-[11px] uppercase tracking-wider"
                 data-testid="load-all-btn"
               >
-                Show all
+                {cs ? "Zobrazit vše" : "Show all"}
               </button>
             )}
           </div>

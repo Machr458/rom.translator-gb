@@ -75,6 +75,108 @@ def test_translation_protects_detected_names_exactly():
     assert translated[0].translated == "Pouzil Pikachu Tackle Potion."
 
 
+def test_translation_rejects_added_page_breaks():
+    from server import ExtractedString, _translate_batch
+
+    original = "A{p}B"
+    item = ExtractedString(id="page-test", offset=0, length=3, text=original)
+
+    async def fake_call(prompt, provider, model, api_key):
+        return json.dumps([{"id": "page-test", "translated": "A{p}B{p}C"}])
+
+    with patch("server._call_llm", side_effect=fake_call):
+        translated = asyncio.run(_translate_batch(
+            "Czech", [item], "freetheai", "test-model", "test-key"
+        ))
+
+    assert translated[0].translated == original
+
+
+def test_translation_rejects_over_capacity_output_and_stale_cache_value():
+    from server import _translation_fits_buffer
+
+    source = "Phone numbers are{n}stored in memory.{p}Just choose a name{n}you want to call.{p}Gee, isn't that{n}convenient?"
+    oversized = "Telefonni cisla{n}se ukladaji do{p}pameti. Staci vybrat{n}jmeno, kteremu{p}chces zavolat.{p}To je ale pohodlne,{n}co?"
+    fitted = "Telefonni cisla{n}jsou v pameti.{p}Staci vybrat{n}jmeno k zavolani.{p}To je pohodlne,{n}ze?"
+
+    assert not _translation_fits_buffer(source, oversized, "pokemon_gen2", 99)
+    assert _translation_fits_buffer(source, fitted, "pokemon_gen2", 99)
+
+
+def test_over_capacity_translation_retries_with_compact_prompt():
+    from server import ExtractedString, _translate_batch
+
+    source = "Phone numbers are{n}stored in memory.{p}Just choose a name{n}you want to call.{p}Gee, isn't that{n}convenient?"
+    oversized = "Telefonni cisla{n}se ukladaji do{p}pameti. Staci vybrat{n}jmeno, kteremu{p}chces zavolat.{p}To je ale pohodlne,{n}co?"
+    fitted = "Telefonni cisla{n}jsou v pameti.{p}Staci vybrat{n}jmeno k zavolani.{p}To je pohodlne,{n}ze?"
+    item = ExtractedString(id="phone", offset=0, length=99, text=source)
+    calls = []
+
+    async def fake_call(prompt, provider, model, api_key):
+        calls.append(prompt)
+        translated = oversized if len(calls) == 1 else fitted
+        return json.dumps([{"id": "phone", "translated": translated}])
+
+    with patch("server._call_llm", side_effect=fake_call):
+        result = asyncio.run(_translate_batch(
+            "Czech", [item], "freetheai", "test-model", "test-key", encoding="pokemon_gen2"
+        ))
+
+    assert len(calls) == 2
+    assert "CORRECTION:" in calls[1]
+    assert result[0].translated == fitted
+
+
+def test_over_capacity_cache_entry_is_retranslated():
+    import server
+    from server import ExtractedString, TranslatedString, TranslateRequest
+    from unittest.mock import AsyncMock
+
+    source = "Phone numbers are{n}stored in memory.{p}Just choose a name{n}you want to call.{p}Gee, isn't that{n}convenient?"
+    cached = "Telefonni cisla{n}se ukladaji do{p}pameti. Staci vybrat{n}jmeno, kteremu{p}chces zavolat.{p}To je ale pohodlne,{n}co?"
+    fitted = "Telefonni cisla{n}jsou v pameti.{p}Staci vybrat{n}jmeno k zavolani.{p}To je pohodlne,{n}ze?"
+    item = ExtractedString(id="phone-cache", offset=0, length=99, text=source)
+    request = TranslateRequest(
+        session_id="cache-test",
+        target_language="cs",
+        strings=[item],
+        provider="emergent",
+    )
+    created_tasks = []
+    translated_batch = AsyncMock(return_value=[
+        TranslatedString(id=item.id, original=source, translated=fitted)
+    ])
+    cache_lookup = AsyncMock(return_value={("cs", source): cached})
+    cache_delete = AsyncMock()
+
+    loop = asyncio.new_event_loop()
+    try:
+        with (
+            patch.object(server, "_get_session", return_value={"encoding": "pokemon_gen2"}),
+            patch.object(server, "_get_glossary", return_value=[]),
+            patch.object(server, "_cache_lookup", cache_lookup),
+            patch.object(server, "_cache_delete_many", cache_delete),
+            patch.object(server, "_translate_batch", translated_batch),
+            patch.object(server, "_cache_store_many", new_callable=AsyncMock),
+            patch.object(server, "_update_session"),
+            patch("asyncio.create_task", side_effect=lambda task: created_tasks.append(task)),
+        ):
+            started = loop.run_until_complete(server.translate_rom_start(request))
+            async def finish_worker():
+                await asyncio.gather(*created_tasks)
+
+            loop.run_until_complete(finish_worker())
+    finally:
+        loop.close()
+
+    job = server.JOBS[started["job_id"]]
+    assert job["status"] == "done"
+    assert job["cached_count"] == 0
+    assert translated_batch.await_count == 1
+    assert job["translations"][0]["translated"] == fitted
+    cache_delete.assert_awaited_once_with([server._cache_key(source, "cs")])
+
+
 def test_missing_model_rows_are_retried_in_smaller_batches():
     from server import ExtractedString, _translate_batch
 
@@ -89,7 +191,7 @@ def test_missing_model_rows_are_retried_in_smaller_batches():
         calls.append(ids)
         if len(ids) == 4:
             return json.dumps([{"id": ids[0], "translated": "Prvni"}])
-        return json.dumps([{"id": item_id, "translated": f"Preklad {item_id}"} for item_id in ids])
+        return json.dumps([{"id": item_id, "translated": f"T-{item_id}"} for item_id in ids])
 
     loop = asyncio.new_event_loop()
     try:
@@ -101,4 +203,4 @@ def test_missing_model_rows_are_retried_in_smaller_batches():
         loop.close()
 
     assert [len(call) for call in calls] == [4, 2, 2]
-    assert [item.translated for item in result] == [f"Preklad id-{i}" for i in range(4)]
+    assert [item.translated for item in result] == [f"T-id-{i}" for i in range(4)]

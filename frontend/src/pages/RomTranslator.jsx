@@ -5,15 +5,11 @@ import {
   Gamepad2,
   Upload,
   Download,
-  FileArchive,
-  Cpu,
   Zap,
-  ChevronDown,
   Loader2,
   CheckCircle2,
   XCircle,
   Settings2,
-  Sparkles,
   FileText,
   FileUp,
 } from "lucide-react";
@@ -27,9 +23,57 @@ import {
 import Terminal from "@/components/rom/Terminal";
 import TranslationTable from "@/components/rom/TranslationTable";
 import AiSettingsDialog, { loadSettings, saveSettings } from "@/components/rom/AiSettingsDialog";
+import { ClearCacheButton } from "@/components/rom/ClearCacheButton";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || "";
 const API = `${BACKEND_URL}/api`;
+const APP_VERSION = process.env.REACT_APP_VERSION || "1.2";
+const UI_LANGUAGE_KEY = "romtrans.ui_language";
+const COPY = {
+  en: {
+    settings: "Settings", settingsTitle: "Application settings", appLanguage: "App language",
+    tagline: "Game Boy ROM translation",
+    english: "English", czech: "Čeština", advanced: "Advanced ROM options", encoding: "Text encoding",
+    scanMode: "Scan mode", bytewise: "Full scan", pointers: "Pointer table · GBA only",
+    romStep: "01 / ROM", chooseRom: "Choose a ROM", chooseFile: "Select ROM file",
+    dropHint: "or drop a .gb, .gbc, or .gba file here", noFile: "No ROM selected",
+    loadRom: "Load ROM", loadingRom: "Loading ROM…", loaded: "ROM loaded",
+    loadedStrings: "strings found", targetLanguage: "Translate into", translate: "Translate ROM",
+    translating: "Translating…", downloadRom: "Download patched ROM", exportTxt: "Export TXT",
+    importPatch: "Import TXT & patch ROM", translation: "Translation", original: "Original ROM text",
+    translated: "Translated text", technical: "Technical log", appFooter: "Game Boy ROM localization",
+    cost: "Estimated AI cost", session: "Loaded ROM", encodingInfo: "Encoding",
+    changeRom: "Choose another ROM", settingsHint: "Language, cache, and ROM scan options",
+    checkingCache: "Checking translation cache…", cachedTranslations: "already translated in cache",
+    rejectedCached: "cached entries need a fresh translation for this ROM",
+    apiKeyNeeded: "Save an API key in AI settings before translating.",
+  },
+  cs: {
+    settings: "Nastavení", settingsTitle: "Nastavení aplikace", appLanguage: "Jazyk aplikace",
+    tagline: "Překlad ROM pro Game Boy",
+    english: "English", czech: "Čeština", advanced: "Pokročilé volby ROM", encoding: "Kódování textu",
+    scanMode: "Režim skenování", bytewise: "Úplný sken", pointers: "Tabulka ukazatelů · pouze GBA",
+    romStep: "01 / ROM", chooseRom: "Vyber ROM", chooseFile: "Vybrat soubor ROM",
+    dropHint: "nebo sem přetáhni soubor .gb, .gbc či .gba", noFile: "Není vybraná ROM",
+    loadRom: "Načíst ROM", loadingRom: "Načítám ROM…", loaded: "ROM načtena",
+    loadedStrings: "nalezených textů", targetLanguage: "Přeložit do", translate: "Přeložit ROM",
+    translating: "Překládám…", downloadRom: "Stáhnout patchnutou ROM", exportTxt: "Exportovat TXT",
+    importPatch: "Importovat TXT a patchnout ROM", translation: "Překlad", original: "Původní text ROM",
+    translated: "Přeložený text", technical: "Technický log", appFooter: "Lokalizace Game Boy ROM",
+    cost: "Odhad ceny AI", session: "Načtená ROM", encodingInfo: "Kódování",
+    changeRom: "Vybrat jinou ROM", settingsHint: "Jazyk, cache a volby skenování ROM",
+    checkingCache: "Kontroluji překladovou cache…", cachedTranslations: "již přeloženo v cache",
+    rejectedCached: "starších překladů se pro tuto ROM nepoužije",
+    apiKeyNeeded: "Před překladem ulož API klíč v nastavení AI.",
+  },
+};
 
 export default function RomTranslator() {
   const [languages, setLanguages] = useState([]);
@@ -38,10 +82,17 @@ export default function RomTranslator() {
   const [encoding, setEncoding] = useState("auto");
   const [scanMode, setScanMode] = useState("bytewise");
   const [aiSettings, setAiSettings] = useState(loadSettings());
+  const [appLanguage, setAppLanguage] = useState(() => {
+    try { return localStorage.getItem(UI_LANGUAGE_KEY) || "en"; } catch { return "en"; }
+  });
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [targetLang, setTargetLang] = useState("cs");
   const [file, setFile] = useState(null);
   const [session, setSession] = useState(null);
   const [translations, setTranslations] = useState([]);
+  const [cachedCount, setCachedCount] = useState(0);
+  const [rejectedCachedCount, setRejectedCachedCount] = useState(0);
+  const [cachePreviewLoading, setCachePreviewLoading] = useState(false);
   const [logs, setLogs] = useState([]);
   const [status, setStatus] = useState("idle");
   const [progress, setProgress] = useState(0);
@@ -49,6 +100,19 @@ export default function RomTranslator() {
   const fileInput = useRef(null);
   const importInput = useRef(null);
   const pollRef = useRef(null);
+  const t = COPY[appLanguage] || COPY.en;
+  const estimate = session
+    ? estimateCost(session.strings, aiSettings.provider, aiSettings.model || providers?.[aiSettings.provider]?.default, providers)
+    : null;
+  const formatCost = (value) => value < 0.001 ? "<$0.001" : value < 0.01 ? `$${value.toFixed(4)}` : `$${value.toFixed(3)}`;
+  const requiresApiKey = aiSettings.provider !== "emergent"
+    && !aiSettings.apiKey?.trim()
+    && !providers?.[aiSettings.provider]?.serverKeyAvailable;
+
+  useEffect(() => {
+    localStorage.setItem(UI_LANGUAGE_KEY, appLanguage);
+    document.documentElement.lang = appLanguage;
+  }, [appLanguage]);
 
   const pushLog = useCallback((line, kind = "info") => {
     setLogs((l) => [...l, { line, kind, ts: Date.now() }]);
@@ -78,6 +142,43 @@ export default function RomTranslator() {
     if (pollRef.current) clearInterval(pollRef.current);
   }, []);
 
+  useEffect(() => {
+    if (!session) {
+      setCachedCount(0);
+      setRejectedCachedCount(0);
+      setCachePreviewLoading(false);
+      return undefined;
+    }
+
+    let active = true;
+    setCachePreviewLoading(true);
+    axios.post(`${API}/rom/cache-preview`, {
+      session_id: session.session_id,
+      target_language: targetLang,
+      strings: session.strings,
+    }, { timeout: 180000 }).then(({ data }) => {
+      if (!active) return;
+      const cachedById = new Map((data.translations || []).map((item) => [item.id, item.translated]));
+      setTranslations(session.strings.map((item) => ({
+        id: item.id,
+        original: item.text,
+        translated: cachedById.get(item.id) || "",
+      })));
+      setCachedCount(data.cached_count || 0);
+      setRejectedCachedCount(data.rejected_count || 0);
+    }).catch((error) => {
+      if (!active) return;
+      setTranslations(session.strings.map((item) => ({ id: item.id, original: item.text, translated: "" })));
+      setCachedCount(0);
+      setRejectedCachedCount(0);
+      pushLog(`! CACHE PREVIEW FAILED: ${error.response?.data?.detail || error.message}`, "err");
+    }).finally(() => {
+      if (active) setCachePreviewLoading(false);
+    });
+
+    return () => { active = false; };
+  }, [session, targetLang, pushLog]);
+
   const providerLabel = () => {
     const p = providers?.[aiSettings.provider];
     const modelId = aiSettings.model || p?.default || "";
@@ -94,6 +195,8 @@ export default function RomTranslator() {
     setFile(f);
     setSession(null);
     setTranslations([]);
+    setCachedCount(0);
+    setRejectedCachedCount(0);
     setStatus("idle");
     setProgress(0);
     pushLog(`> LOAD ${f.name} [${(f.size / 1024).toFixed(1)} KB]`, "cmd");
@@ -154,7 +257,6 @@ export default function RomTranslator() {
     }
     setStatus("translating");
     setProgress(2);
-    setTranslations(session.strings.map((s) => ({ id: s.id, original: s.text, translated: "" })));
     pushLog(`> TRANSLATE :: target=${targetLang.toUpperCase()} via ${providerLabel()}`, "cmd");
     pushLog(`  Sending ${session.strings.length} strings; cached and duplicate texts are skipped, batches are automatic...`, "info");
 
@@ -352,24 +454,71 @@ export default function RomTranslator() {
             </div>
             <div>
               <h1 className="font-display text-xl sm:text-2xl font-bold tracking-tight" data-testid="app-title">
-                ROM<span className="text-[#8BAC0F]">.</span>TRANSLATE
+                ROM<span className="text-[#8BAC0F]">.</span>translate
               </h1>
               <p className="text-[10px] sm:text-xs font-mono text-neutral-500 uppercase tracking-wider">
-                Gameboy · AI localization terminal
+                {t.tagline}
               </p>
             </div>
           </div>
-          <div className="flex items-center gap-3">
-            <span className="hidden sm:inline-flex items-center gap-2 border border-neutral-800 px-3 py-2 font-mono text-[10px] uppercase text-neutral-400">
-              <Sparkles className="w-3 h-3 text-[#9BBC0F]" /> {providerLabel()}
-            </span>
-          </div>
+          <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
+            <button
+              onClick={() => setSettingsOpen(true)}
+              className="h-10 px-3 border border-neutral-700 hover:border-[#8BAC0F] text-neutral-200 hover:text-[#9BBC0F] font-mono text-xs uppercase flex items-center gap-2"
+              data-testid="settings-open"
+            >
+              <Settings2 className="w-4 h-4" /> {t.settings}
+            </button>
+            <DialogContent className="max-h-[88vh] overflow-y-auto bg-neutral-950 border-neutral-800 text-neutral-100 sm:rounded-sm">
+              <DialogHeader>
+                <DialogTitle className="font-display text-xl">{t.settingsTitle}</DialogTitle>
+                <DialogDescription className="text-neutral-500 font-mono text-xs">{t.settingsHint}</DialogDescription>
+              </DialogHeader>
+              <div className="space-y-5">
+                <label className="block">
+                  <span className="font-mono text-[10px] uppercase text-neutral-500 mb-1.5 block">{t.appLanguage}</span>
+                  <Select value={appLanguage} onValueChange={setAppLanguage}>
+                    <SelectTrigger className="h-10 bg-neutral-900 border-neutral-700 rounded-sm font-mono text-xs" data-testid="app-language-select"><SelectValue /></SelectTrigger>
+                    <SelectContent className="bg-neutral-900 border-neutral-800 rounded-sm">
+                      <SelectItem value="en">English</SelectItem>
+                      <SelectItem value="cs">Čeština</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </label>
+                <ClearCacheButton language={appLanguage} />
+                <details className="border-t border-neutral-800 pt-4" data-testid="advanced-rom-settings">
+                  <summary className="cursor-pointer font-mono text-xs uppercase text-neutral-300">{t.advanced}</summary>
+                  <div className="space-y-4 pt-4">
+                    <label className="block">
+                      <span className="font-mono text-[10px] uppercase text-neutral-500 mb-1.5 block">{t.encoding}</span>
+                      <Select value={encoding} onValueChange={setEncoding}>
+                        <SelectTrigger className="h-10 bg-neutral-900 border-neutral-700 rounded-sm font-mono text-xs" data-testid="encoding-select"><SelectValue /></SelectTrigger>
+                        <SelectContent className="bg-neutral-900 border-neutral-800 rounded-sm">
+                          {encodings.map((entry) => <SelectItem key={entry.id} value={entry.id}>{entry.label}</SelectItem>)}
+                        </SelectContent>
+                      </Select>
+                    </label>
+                    <label className="block">
+                      <span className="font-mono text-[10px] uppercase text-neutral-500 mb-1.5 block">{t.scanMode}</span>
+                      <Select value={scanMode} onValueChange={setScanMode}>
+                        <SelectTrigger className="h-10 bg-neutral-900 border-neutral-700 rounded-sm font-mono text-xs" data-testid="scan-mode-select"><SelectValue /></SelectTrigger>
+                        <SelectContent className="bg-neutral-900 border-neutral-800 rounded-sm">
+                          <SelectItem value="bytewise">{t.bytewise}</SelectItem>
+                          <SelectItem value="pointers">{t.pointers}</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </label>
+                  </div>
+                </details>
+              </div>
+            </DialogContent>
+          </Dialog>
         </div>
       </header>
 
-      <main className="max-w-[1400px] mx-auto p-4 sm:p-6 grid grid-cols-1 lg:grid-cols-12 gap-4 sm:gap-6">
+      <main className="max-w-5xl mx-auto p-4 sm:p-6 flex flex-col gap-5">
         <section
-          className={`lg:col-span-5 bg-neutral-900 border rounded-sm p-5 sm:p-6 transition-colors ${
+          className={`w-full max-w-3xl mx-auto bg-neutral-900 border rounded-sm p-5 sm:p-6 transition-colors ${
             dragActive ? "border-[#8BAC0F]" : "border-neutral-800"
           }`}
           onDragOver={(e) => { e.preventDefault(); setDragActive(true); }}
@@ -378,8 +527,8 @@ export default function RomTranslator() {
           data-testid="dropzone-card"
         >
           <div className="flex items-center justify-between mb-4">
-            <h2 className="font-mono text-xs uppercase text-neutral-400 tracking-widest">01 · Cartridge</h2>
-            <FileArchive className="w-4 h-4 text-neutral-600" />
+            <h2 className="font-mono text-xs uppercase text-neutral-400 tracking-widest">{t.romStep}</h2>
+            {session && <CheckCircle2 className="w-4 h-4 text-[#9BBC0F]" />}
           </div>
 
           <div
@@ -405,166 +554,112 @@ export default function RomTranslator() {
               </>
             ) : (
               <>
-                <p className="font-display text-base font-semibold">Select a ROM</p>
-                <p className="font-mono text-xs text-neutral-500 mt-1.5">Drop a .gb, .gbc, or .gba file here</p>
+                <p className="font-display text-base font-semibold">{t.chooseRom}</p>
+                <p className="font-mono text-xs text-neutral-500 mt-1.5">{t.dropHint}</p>
               </>
             )}
           </div>
 
-          <details className="group mt-4 border border-neutral-800 bg-neutral-950/50" data-testid="settings-dropdown">
-            <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-3 font-mono text-[11px] uppercase tracking-wider text-neutral-300 hover:text-[#9BBC0F]">
-              <span className="flex items-center gap-2"><Settings2 className="w-3.5 h-3.5" /> Settings</span>
-              <span className="text-[10px] text-neutral-600 normal-case">{targetLang.toUpperCase()} · {providerLabel()}</span>
-              <ChevronDown className="w-4 h-4 shrink-0 transition-transform group-open:rotate-180" />
-            </summary>
-            <div className="space-y-4 border-t border-neutral-800 p-3">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <label className="block">
-                  <span className="font-mono text-[10px] uppercase text-neutral-500 mb-1.5 block">Target language</span>
-                  <Select value={targetLang} onValueChange={setTargetLang}>
-                    <SelectTrigger className="h-10 bg-neutral-950 border-neutral-700 rounded-sm font-mono text-xs" data-testid="language-select">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent className="bg-neutral-900 border-neutral-800 rounded-sm">
-                      {languages.map((language) => (
-                        <SelectItem key={language.code} value={language.code} className="font-mono text-xs" data-testid={`lang-option-${language.code}`}>
-                          <span className="text-[#8BAC0F] mr-2">{language.code.toUpperCase()}</span>{language.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </label>
-                <label className="block">
-                  <span className="font-mono text-[10px] uppercase text-neutral-500 mb-1.5 block">Text encoding</span>
-                  <Select value={encoding} onValueChange={setEncoding}>
-                    <SelectTrigger className="h-10 bg-neutral-950 border-neutral-700 rounded-sm font-mono text-xs" data-testid="encoding-select">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent className="bg-neutral-900 border-neutral-800 rounded-sm">
-                      {encodings.map((entry) => (
-                        <SelectItem key={entry.id} value={entry.id} className="font-mono text-xs" data-testid={`encoding-option-${entry.id}`}>
-                          {entry.label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </label>
-              </div>
+          {file && !session && (
+            <button
+              onClick={extract}
+              disabled={status === "extracting"}
+              className="mt-4 w-full h-11 bg-[#8BAC0F] text-black font-display font-bold text-sm uppercase rounded-sm btn-brutal disabled:opacity-40 flex items-center justify-center gap-2"
+              data-testid="extract-btn"
+            >
+              {status === "extracting" ? <><Loader2 className="w-4 h-4 animate-spin" />{t.loadingRom}</> : <>{t.loadRom}</>}
+            </button>
+          )}
 
+          {session && (
+            <section className="mt-6 border-t border-neutral-800 pt-5" data-testid="post-load-controls">
+              <div className="mb-4">
+                <p className="font-mono text-[10px] uppercase tracking-widest text-[#9BBC0F]">02 / {t.translation}</p>
+                <p className="mt-1 font-mono text-xs text-neutral-500">{session.strings.length.toLocaleString()} {t.loadedStrings}</p>
+                <p className="mt-2 font-mono text-[10px] text-neutral-500" data-testid="cache-preview-status">
+                  {cachePreviewLoading
+                    ? t.checkingCache
+                    : `${cachedCount} ${t.cachedTranslations}${rejectedCachedCount ? ` · ${rejectedCachedCount} ${t.rejectedCached}` : ""}`}
+                </p>
+              </div>
               <label className="block">
-                <span className="font-mono text-[10px] uppercase text-neutral-500 mb-1.5 block">Scan mode</span>
-                <Select value={scanMode} onValueChange={setScanMode}>
-                  <SelectTrigger className="h-10 bg-neutral-950 border-neutral-700 rounded-sm font-mono text-xs" data-testid="scan-mode-select">
-                    <SelectValue />
-                  </SelectTrigger>
+                <span className="font-mono text-[10px] uppercase text-neutral-500 mb-1.5 block">{t.targetLanguage}</span>
+                <Select value={targetLang} onValueChange={setTargetLang}>
+                  <SelectTrigger className="h-11 bg-neutral-950 border-neutral-700 rounded-sm font-mono text-xs" data-testid="language-select"><SelectValue /></SelectTrigger>
                   <SelectContent className="bg-neutral-900 border-neutral-800 rounded-sm">
-                    <SelectItem value="bytewise" className="font-mono text-xs" data-testid="scan-mode-option-bytewise">
-                      Full scan · story and descriptions
-                    </SelectItem>
-                    <SelectItem value="pointers" className="font-mono text-xs" data-testid="scan-mode-option-pointers">
-                      Pointer table · GBA only
-                    </SelectItem>
+                    {languages.map((language) => (
+                      <SelectItem key={language.code} value={language.code} data-testid={`lang-option-${language.code}`}>
+                        <span className="text-[#8BAC0F] mr-2">{language.code.toUpperCase()}</span>{language.name}
+                      </SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
               </label>
-
-              <AiSettingsDialog
-                providers={providers}
-                settings={aiSettings}
-                onSave={setAiSettings}
-              />
-            </div>
-          </details>
-
-          <button
-            onClick={extract}
-            disabled={!file || status === "extracting"}
-            className="mt-4 w-full h-11 bg-[#8BAC0F] text-black font-display font-bold text-sm tracking-wide rounded-sm btn-brutal disabled:opacity-40 disabled:cursor-not-allowed disabled:shadow-none flex items-center justify-center gap-2"
-            data-testid="extract-btn"
-          >
-            {status === "extracting" ? (
-              <><Loader2 className="w-4 h-4 animate-spin" /> SCANNING...</>
-            ) : (
-              <><Cpu className="w-4 h-4" /> SCAN & EXTRACT</>
-            )}
-          </button>
-
-          <button
-            onClick={translate}
-            disabled={!session || status === "translating"}
-            className="mt-2 w-full h-11 bg-transparent border border-[#8BAC0F] text-[#9BBC0F] font-display font-bold text-sm tracking-wide rounded-sm disabled:opacity-30 disabled:cursor-not-allowed hover:bg-[#8BAC0F]/10 transition-colors flex items-center justify-center gap-2"
-            data-testid="translate-btn"
-          >
-            {status === "translating" ? (
-              <><Loader2 className="w-4 h-4 animate-spin" /> TRANSLATING...</>
-            ) : (
-              <><Zap className="w-4 h-4" /> TRANSLATE</>
-            )}
-          </button>
-
-          <button
-            onClick={downloadPatched}
-            disabled={status !== "done"}
-            className="mt-2 w-full h-11 bg-transparent border border-neutral-700 text-neutral-300 font-display font-bold text-sm tracking-wide rounded-sm disabled:opacity-30 disabled:cursor-not-allowed hover:border-[#8BAC0F] hover:text-[#9BBC0F] transition-colors flex items-center justify-center gap-2"
-            data-testid="download-btn"
-          >
-            <Download className="w-4 h-4" /> DOWNLOAD PATCHED ROM
-          </button>
-
-          {session?.strings?.length > 0 && (() => {
-            const estimate = estimateCost(session.strings, aiSettings.provider, aiSettings.model || providers?.[aiSettings.provider]?.default, providers);
-            if (!estimate) return null;
-            const formatCost = (value) => value < 0.001 ? "<$0.001" : value < 0.01 ? `$${value.toFixed(4)}` : `$${value.toFixed(3)}`;
-            return (
-              <div className="mt-3 border border-neutral-800 rounded-sm p-3 bg-neutral-950/70" data-testid="cost-estimate">
-                <div className="flex items-center justify-between font-mono text-[10px] uppercase text-neutral-500 mb-2">
-                  <span>Estimated cost</span>
-                  <span className="text-[#9BBC0F]">{formatCost(estimate.total)}</span>
-                </div>
-                <div className="font-mono text-[10px] text-neutral-500 flex justify-between gap-2">
-                  <span>{estimate.count} strings · ~{Math.round((estimate.inTokens + estimate.outTokens) / 1000)}k tokens</span>
-                  <span>In {formatCost(estimate.input)} · Out {formatCost(estimate.output)}</span>
-                </div>
+              <div className="mt-5 border-t border-neutral-800 pt-4">
+                <AiSettingsDialog
+                  providers={providers}
+                  settings={aiSettings}
+                  onSave={(next) => { saveSettings(next); setAiSettings(next); }}
+                  language={appLanguage}
+                />
               </div>
-            );
-          })()}
+              {estimate && (
+                <p className="mt-4 font-mono text-[10px] text-neutral-500" data-testid="cost-estimate">
+                  {t.cost}: <span className="text-[#9BBC0F]">{formatCost(estimate.total)}</span>
+                </p>
+              )}
+              {requiresApiKey && (
+                <p className="mt-4 font-mono text-xs text-amber-400" role="status" data-testid="api-key-required">
+                  {t.apiKeyNeeded}
+                </p>
+              )}
+              <button
+                onClick={translate}
+                disabled={status === "translating" || cachePreviewLoading || requiresApiKey}
+                className="mt-5 w-full h-12 bg-[#8BAC0F] text-black font-display font-bold text-sm uppercase rounded-sm btn-brutal disabled:opacity-50 flex items-center justify-center gap-2"
+                data-testid="translate-btn"
+              >
+                {status === "translating" ? <><Loader2 className="w-4 h-4 animate-spin" />{t.translating}</> : <><Zap className="w-4 h-4" />{t.translate}</>}
+              </button>
+            </section>
+          )}
 
-          <details className="group mt-4 border-t border-neutral-800 pt-3" data-testid="text-file-options">
-            <summary className="flex cursor-pointer list-none items-center justify-between gap-3 font-mono text-[10px] uppercase tracking-wider text-neutral-500 hover:text-neutral-300">
-              <span className="flex items-center gap-2"><FileText className="w-3.5 h-3.5" /> Other options · export / import</span>
-              <ChevronDown className="w-4 h-4 transition-transform group-open:rotate-180" />
-            </summary>
-            <div className="pt-3">
-              <button
-                onClick={exportTxt}
-                disabled={!session}
-                className="w-full h-10 bg-transparent border border-neutral-700 hover:border-[#8BAC0F] text-neutral-300 hover:text-[#9BBC0F] font-display font-bold text-xs tracking-wide rounded-sm disabled:opacity-30 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2"
-                data-testid="export-txt-btn"
-              >
-                <FileText className="w-4 h-4" /> EXPORT TRANSLATION FILE
-              </button>
-              <input
-                ref={importInput}
-                type="file"
-                accept=".txt,text/plain"
-                className="hidden"
-                onChange={(event) => {
-                  const selectedFile = event.target.files?.[0];
-                  if (selectedFile) importAndPatch(selectedFile);
-                  event.target.value = "";
-                }}
-                data-testid="import-txt-input"
-              />
-              <button
-                onClick={() => importInput.current?.click()}
-                disabled={!session}
-                className="mt-2 w-full h-10 bg-transparent border border-neutral-700 hover:border-[#8BAC0F] text-neutral-300 hover:text-[#9BBC0F] font-display font-bold text-xs tracking-wide rounded-sm disabled:opacity-30 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2"
-                data-testid="insert-translation-btn"
-              >
-                <FileUp className="w-4 h-4" /> IMPORT & BUILD ROM
-              </button>
-            </div>
-          </details>
+          {session && (
+            <section className="mt-5 border-t border-neutral-800 pt-4" data-testid="text-file-options">
+              <div className="flex flex-col sm:flex-row gap-2">
+                <button
+                  onClick={exportTxt}
+                  className="h-10 flex-1 border border-neutral-700 hover:border-[#8BAC0F] text-neutral-300 hover:text-[#9BBC0F] font-mono text-xs uppercase flex items-center justify-center gap-2"
+                  data-testid="export-txt-btn"
+                >
+                  <FileText className="w-4 h-4" /> {t.exportTxt}
+                </button>
+                <input
+                  ref={importInput}
+                  type="file"
+                  accept=".txt,text/plain"
+                  className="hidden"
+                  onChange={(event) => { const selectedFile = event.target.files?.[0]; if (selectedFile) importAndPatch(selectedFile); event.target.value = ""; }}
+                  data-testid="import-txt-input"
+                />
+                <button
+                  onClick={() => importInput.current?.click()}
+                  className="h-10 flex-1 border border-neutral-700 hover:border-[#8BAC0F] text-neutral-300 hover:text-[#9BBC0F] font-mono text-xs uppercase flex items-center justify-center gap-2"
+                  data-testid="insert-translation-btn"
+                >
+                  <FileUp className="w-4 h-4" /> {t.importPatch}
+                </button>
+                <button
+                  onClick={downloadPatched}
+                  disabled={!translations.some((item) => item.translated && item.translated !== item.original)}
+                  className="h-10 flex-1 border border-[#8BAC0F] text-[#9BBC0F] hover:bg-[#8BAC0F]/10 font-mono text-xs uppercase disabled:opacity-40 flex items-center justify-center gap-2"
+                  data-testid="download-btn"
+                >
+                  <Download className="w-4 h-4" /> {t.downloadRom}
+                </button>
+              </div>
+            </section>
+          )}
         </section>
 
         {/* Terminal */}
@@ -599,44 +694,28 @@ export default function RomTranslator() {
           )}
         </section>
 
-        {/* Session stats */}
-        <section className="lg:col-span-5 bg-neutral-900 border border-neutral-800 rounded-sm p-6" data-testid="stats-card">
-          <h2 className="font-mono text-xs uppercase text-neutral-400 tracking-widest mb-4">02 · Session</h2>
-          <dl className="space-y-3 font-mono text-xs">
-            <StatRow label="ROM Type" value={session?.rom_type || "—"} />
-            <StatRow label="Size" value={session ? `${(session.rom_size / 1024).toFixed(1)} KB` : "—"} />
-            <StatRow label="Encoding" value={session?.encoding || encoding} highlight={session?.encoding === "pokemon_gen3"} />
-            <StatRow label="Found in ROM" value={session?.found_total ?? "—"} />
-            <StatRow label="Loaded" value={session?.strings?.length ?? "—"} highlight />
-            <StatRow label="Target" value={targetLang.toUpperCase()} />
-            <StatRow label="AI" value={<span className="inline-flex items-center gap-1"><Sparkles className="w-3 h-3" />{(aiSettings.provider || "emergent").toUpperCase()}</span>} />
-            <StatRow
-              label="Translated"
-              value={translations.filter((t) => t.translated).length + " / " + translations.length}
-              highlight={status === "done"}
+        {session && (
+          <section className="w-full max-w-3xl mx-auto border border-neutral-800 bg-neutral-900/80" data-testid="viewer-card">
+            <div className="flex items-center justify-between px-4 sm:px-6 py-4 border-b border-neutral-800">
+              <h2 className="font-display text-lg font-semibold">{t.translation}</h2>
+              <span className="font-mono text-[10px] text-neutral-500">{session.strings.length.toLocaleString()}</span>
+            </div>
+            <TranslationTable
+              strings={session.strings}
+              translations={translations}
+              encoding={session.encoding}
+              onEdit={handleEditTranslation}
+              language={appLanguage}
             />
-          </dl>
-        </section>
+          </section>
+        )}
 
-        {/* Translation table */}
-        <section className="lg:col-span-7 bg-neutral-900 border border-neutral-800 rounded-sm" data-testid="viewer-card">
-          <div className="flex items-center justify-between px-6 py-4 border-b border-neutral-800">
-            <h2 className="font-display text-lg font-bold tracking-tight">Translation Viewer</h2>
-            <span className="font-mono text-[11px] text-neutral-500">{session?.strings?.length || 0} strings</span>
-          </div>
-          <TranslationTable
-            strings={session?.strings || []}
-            translations={translations}
-            encoding={session?.encoding}
-            onEdit={handleEditTranslation}
-          />
-        </section>
       </main>
 
       <footer className="border-t border-neutral-800 mt-8 py-6 px-6">
-        <div className="max-w-[1400px] mx-auto flex flex-col sm:flex-row items-center justify-between gap-2 font-mono text-[10px] text-neutral-600 uppercase tracking-widest">
-          <span>ROM Translate</span>
-          <span>Gemini · OpenAI · Anthropic · FreeTheAI</span>
+        <div className="max-w-5xl mx-auto flex items-center justify-between gap-2 font-mono text-[10px] text-neutral-600 uppercase tracking-widest">
+          <span>ROM.translate · {t.appFooter}</span>
+          <span>v{APP_VERSION}</span>
         </div>
       </footer>
     </div>

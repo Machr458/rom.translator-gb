@@ -6,7 +6,6 @@ import {
   Loader2,
   PlugZap,
   ShieldCheck,
-  Trash2,
   XCircle,
 } from "lucide-react";
 import {
@@ -34,14 +33,12 @@ export function saveSettings(settings) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
 }
 
-export default function AiSettingsDialog({ providers, settings, onSave }) {
+export default function AiSettingsDialog({ providers, settings, onSave, language = "en" }) {
   const [provider, setProvider] = useState(settings.provider || "emergent");
   const [model, setModel] = useState(settings.model || "");
   const [apiKey, setApiKey] = useState(settings.apiKey || "");
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState(null);
-  const [clearing, setClearing] = useState(false);
-  const [cacheStats, setCacheStats] = useState(null);
 
   useEffect(() => {
     setProvider(settings.provider || "emergent");
@@ -51,6 +48,7 @@ export default function AiSettingsDialog({ providers, settings, onSave }) {
 
   const providerInfo = providers?.[provider];
   const models = providerInfo?.models || [];
+  const cs = language === "cs";
 
   useEffect(() => {
     const availableModels = providerInfo?.models || [];
@@ -60,10 +58,6 @@ export default function AiSettingsDialog({ providers, settings, onSave }) {
     }
   }, [model, providerInfo]);
 
-  useEffect(() => {
-    axios.get(`${API}/cache/stats`).then((r) => setCacheStats(r.data)).catch(() => setCacheStats(null));
-  }, []);
-
   const handleSave = () => {
     const next = {
       provider,
@@ -72,7 +66,7 @@ export default function AiSettingsDialog({ providers, settings, onSave }) {
     };
     saveSettings(next);
     onSave(next);
-    toast.success("Settings saved");
+    toast.success(cs ? "Nastavení AI uloženo." : "AI settings saved.");
   };
 
   const handleTest = async () => {
@@ -86,30 +80,16 @@ export default function AiSettingsDialog({ providers, settings, onSave }) {
       }, { timeout: 45000 });
       setTestResult(response.data);
       if (response.data.ok) {
-        toast.success(`Connection successful: "${response.data.reply}"`);
+        toast.success(cs ? `Připojení funguje: "${response.data.reply}"` : `Connection successful: "${response.data.reply}"`);
       } else {
-        toast.error(response.data.friendly || response.data.error || "Connection test failed");
+        toast.error(response.data.friendly || response.data.error || (cs ? "Test připojení selhal." : "Connection test failed."));
       }
     } catch (error) {
       const message = error.response?.data?.detail || error.message;
       setTestResult({ ok: false, error: message, friendly: message });
-      toast.error(`Connection test failed: ${message}`);
+      toast.error(cs ? `Test API klíče selhal: ${message}` : `API key test failed: ${message}`);
     } finally {
       setTesting(false);
-    }
-  };
-
-  const handleClearCache = async () => {
-    if (!window.confirm("Clear all saved translations? Future translations will use AI again.")) return;
-    setClearing(true);
-    try {
-      const response = await axios.post(`${API}/cache/clear`);
-      toast.success(`Cache cleared. ${response.data?.deleted ?? 0} entries removed.`);
-      setCacheStats({ total: 0, per_language: [] });
-    } catch (error) {
-      toast.error(`Could not clear cache: ${error.response?.data?.detail || error.message}`);
-    } finally {
-      setClearing(false);
     }
   };
 
@@ -117,10 +97,10 @@ export default function AiSettingsDialog({ providers, settings, onSave }) {
     <div className="space-y-4" data-testid="ai-settings-panel">
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <label className="block">
-          <span className="font-mono text-[10px] uppercase text-neutral-500 mb-1.5 block">AI Provider</span>
+          <span className="font-mono text-[10px] uppercase text-neutral-500 mb-1.5 block">{cs ? "AI služba" : "AI provider"}</span>
           <Select value={provider} onValueChange={setProvider}>
             <SelectTrigger className="h-10 bg-neutral-950 border-neutral-700 rounded-sm font-mono text-xs" data-testid="provider-select">
-              <SelectValue placeholder="Select provider" />
+              <SelectValue placeholder={cs ? "Vyber AI službu" : "Select provider"} />
             </SelectTrigger>
             <SelectContent className="bg-neutral-900 border-neutral-800 rounded-sm">
               {Object.entries(providers || {}).map(([id, info]) => (
@@ -136,7 +116,7 @@ export default function AiSettingsDialog({ providers, settings, onSave }) {
           <span className="font-mono text-[10px] uppercase text-neutral-500 mb-1.5 block">Model</span>
           <Select value={model || providerInfo?.default} onValueChange={setModel}>
             <SelectTrigger className="h-10 bg-neutral-950 border-neutral-700 rounded-sm font-mono text-xs" data-testid="model-select">
-              <SelectValue placeholder="Select model" />
+              <SelectValue placeholder={cs ? "Vyber model" : "Select model"} />
             </SelectTrigger>
             <SelectContent className="bg-neutral-900 border-neutral-800 rounded-sm">
               {models.map((entry) => (
@@ -150,17 +130,17 @@ export default function AiSettingsDialog({ providers, settings, onSave }) {
       </div>
 
       <label className="block">
-        <span className="font-mono text-[10px] uppercase text-neutral-500 mb-1.5 block">API Key</span>
+          <span className="font-mono text-[10px] uppercase text-neutral-500 mb-1.5 block">{cs ? "API klíč" : "API key"}</span>
         <input
           type="password"
           value={apiKey}
           onChange={(event) => setApiKey(event.target.value)}
-          placeholder={providerInfo?.keyHint || "Enter API key"}
+          placeholder={providerInfo?.keyHint || (cs ? "Vlož API klíč" : "Enter API key")}
           className="w-full h-10 bg-neutral-950 border border-neutral-700 rounded-sm px-3 font-mono text-xs placeholder:text-neutral-600 focus:outline-none focus:border-[#8BAC0F]"
           data-testid="api-key-input"
         />
         <span className="font-mono text-[10px] text-neutral-600 mt-1.5 flex items-center gap-1">
-          <ShieldCheck className="w-3 h-3" /> Stored only in this browser.
+          <ShieldCheck className="w-3 h-3" /> {cs ? "Ukládá se pouze v tomto prohlížeči." : "Stored only in this browser."}
         </span>
       </label>
 
@@ -172,14 +152,14 @@ export default function AiSettingsDialog({ providers, settings, onSave }) {
           data-testid="settings-test"
         >
           {testing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <PlugZap className="w-3.5 h-3.5" />}
-          {testing ? "Testing..." : "Test connection"}
+          {testing ? (cs ? "Testuji…" : "Testing…") : (cs ? "Otestovat API klíč" : "Test API key")}
         </button>
         <button
           onClick={handleSave}
           className="h-9 px-4 bg-[#8BAC0F] text-black font-display font-bold text-[10px] uppercase tracking-wider rounded-sm btn-brutal"
           data-testid="settings-save"
         >
-          Save settings
+          {cs ? "Uložit AI nastavení" : "Save AI settings"}
         </button>
       </div>
 
@@ -187,34 +167,14 @@ export default function AiSettingsDialog({ providers, settings, onSave }) {
         <div className={`border rounded-sm p-3 font-mono text-[11px] ${testResult.ok ? "border-[#8BAC0F] bg-[#8BAC0F]/5" : "border-[#C7305C] bg-[#C7305C]/5"}`} data-testid="test-result">
           <div className="flex items-center gap-2 mb-1.5">
             {testResult.ok ? (
-              <><CheckCircle2 className="w-4 h-4 text-[#8BAC0F]" /><span className="text-[#9BBC0F] font-bold">Connected</span></>
+              <><CheckCircle2 className="w-4 h-4 text-[#8BAC0F]" /><span className="text-[#9BBC0F] font-bold">{cs ? "Připojeno" : "Connected"}</span></>
             ) : (
-              <><XCircle className="w-4 h-4 text-[#C7305C]" /><span className="text-[#C7305C] font-bold">Failed</span></>
+              <><XCircle className="w-4 h-4 text-[#C7305C]" /><span className="text-[#C7305C] font-bold">{cs ? "Chyba" : "Failed"}</span></>
             )}
           </div>
-          <p className="text-neutral-300">{testResult.ok ? `Reply: ${testResult.reply}` : testResult.friendly || testResult.error}</p>
+          <p className="text-neutral-300">{testResult.ok ? `${cs ? "Odpověď" : "Reply"}: ${testResult.reply}` : testResult.friendly || testResult.error}</p>
         </div>
       )}
-
-      <div className="border-t border-neutral-800 pt-4" data-testid="cache-section">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <h3 className="font-mono text-[10px] uppercase text-neutral-500 tracking-widest">Translation Cache</h3>
-            <p className="font-mono text-[10px] text-neutral-600 mt-1">
-              {cacheStats ? `${cacheStats.total} saved translations` : "Cache status unavailable"}
-            </p>
-          </div>
-          <button
-            onClick={handleClearCache}
-            disabled={clearing || !cacheStats?.total}
-            className="h-8 px-3 border border-[#C7305C]/60 hover:border-[#C7305C] text-[#C7305C] rounded-sm font-mono text-[10px] uppercase tracking-wider disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-2"
-            data-testid="clear-cache-btn"
-          >
-            {clearing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
-            {clearing ? "Clearing..." : "Clear cache"}
-          </button>
-        </div>
-      </div>
     </div>
   );
 }

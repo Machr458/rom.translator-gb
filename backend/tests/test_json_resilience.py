@@ -236,15 +236,20 @@ class TestSQLiteEndpoints:
 
 # ---------- Prompt inspection ----------
 class TestPromptRules:
-    def test_prompt_does_not_ask_ai_to_shorten_translations(self):
+    def test_prompt_includes_byte_capacity_and_page_layout(self):
         from server import _build_translation_prompt
         p = _build_translation_prompt("Czech", [ExtractedString(
-            id="s1", text="h{USER}CONTINUE, TIME NOT SET", offset=0, length=29
-        )])
+            id="s1", text="Phone numbers are{n}stored in memory.{p}Next.", offset=0, length=29
+        )], encoding="pokemon_gen2")
 
-        assert "translate the complete meaning, including every clause" in p.lower()
-        assert "do not omit content" in p.lower()
-        assert "abbreviate naturally to fit within the original length" not in p.lower()
+        assert '"max_bytes":29' in p
+        assert '"page_count":2' in p
+        assert "complete, faithful, natural translation of the entire source" in p.lower()
+        assert "clause, qualifier, and small function word" in p.lower()
+        assert "exact page_count and exact number/order of {p} page breaks" in p.lower()
+        assert "never split a phrase across pages" in p.lower()
+        assert "do not target the source line length" in p.lower()
+        assert "keep each line no longer than the original line" not in p.lower()
 
     def test_prompt_forbids_backslash(self):
         from server import _build_translation_prompt

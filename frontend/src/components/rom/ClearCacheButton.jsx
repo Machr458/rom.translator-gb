@@ -15,7 +15,8 @@ import {
 
 const API = `${process.env.REACT_APP_BACKEND_URL || ""}/api`;
 
-export const ClearCacheButton = () => {
+export const ClearCacheButton = ({ language = "en" }) => {
+  const cs = language === "cs";
   const [open, setOpen] = useState(false);
   const [total, setTotal] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -35,10 +36,10 @@ export const ClearCacheButton = () => {
     setBusy(true);
     try {
       const r = await axios.post(`${API}/cache/clear`);
-      toast.success(`Cache cleared. ${r.data?.deleted ?? 0} entries removed.`);
+      toast.success(cs ? `Cache vymazána. Odebráno záznamů: ${r.data?.deleted ?? 0}.` : `Cache cleared. ${r.data?.deleted ?? 0} entries removed.`);
       setOpen(false);
     } catch (e) {
-      toast.error("Could not clear cache: " + (e.response?.data?.detail || e.message));
+      toast.error((cs ? "Cache se nepodařilo vymazat: " : "Could not clear cache: ") + (e.response?.data?.detail || e.message));
     } finally {
       setBusy(false);
     }
@@ -52,28 +53,28 @@ export const ClearCacheButton = () => {
         data-testid="header-clear-cache-btn"
       >
         <Trash2 className="w-3.5 h-3.5" />
-        <span className="hidden sm:inline">Clear cache</span>
+        <span>{cs ? "Vymazat cache" : "Clear cache"}</span>
       </button>
       <AlertDialog open={open} onOpenChange={setOpen}>
         <AlertDialogContent className="bg-neutral-950 border-neutral-800 text-neutral-100" data-testid="clear-cache-dialog">
           <AlertDialogHeader>
-            <AlertDialogTitle>Clear translation cache?</AlertDialogTitle>
+            <AlertDialogTitle>{cs ? "Vymazat překladovou cache?" : "Clear translation cache?"}</AlertDialogTitle>
             <AlertDialogDescription className="text-neutral-400" data-testid="clear-cache-count">
-              {total === null ? "Loading..." : `${total} entries are stored. `}
-              Future translations will call AI again.
+              {total === null ? (cs ? "Načítám…" : "Loading…") : cs ? `Je uloženo záznamů: ${total}. ` : `${total} entries are stored. `}
+              {cs ? "Další překlady budou znovu volat AI." : "Future translations will call AI again."}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel className="bg-transparent border-neutral-700 text-neutral-300" data-testid="clear-cache-cancel">
-              Cancel
+              {cs ? "Zrušit" : "Cancel"}
             </AlertDialogCancel>
             <AlertDialogAction
               onClick={(e) => { e.preventDefault(); clear(); }}
               disabled={busy}
-              className="bg-red-600 hover:bg-red-700 text-white"
+              className="bg-[#C7305C] hover:bg-[#a92549] text-white"
               data-testid="clear-cache-confirm"
             >
-              {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : "Clear cache"}
+              {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : (cs ? "Vymazat cache" : "Clear cache")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

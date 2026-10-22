@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 KIND="${1:-update}"
-VERSION="${APP_VERSION:-1.1}"
+VERSION="${APP_VERSION:-1.2}"
 
 if [[ "$KIND" != "install" && "$KIND" != "update" ]]; then
   echo "Usage: bash deploy/raspberry-pi/package.sh [install|update]" >&2
@@ -12,14 +12,11 @@ if [[ "$KIND" != "install" && "$KIND" != "update" ]]; then
 fi
 
 if [[ ! "$VERSION" =~ ^[0-9]+([.][0-9]+)*$ ]]; then
-  echo "APP_VERSION must contain numbers separated by dots, for example 1.1." >&2
+  echo "APP_VERSION must contain numbers separated by dots, for example 1.2." >&2
   exit 2
 fi
 
-if [[ ! -f "$ROOT_DIR/frontend/build/index.html" ]]; then
-  echo "Frontend build is missing. Build it first with: REACT_APP_BACKEND_URL= yarn --cwd frontend build" >&2
-  exit 1
-fi
+REACT_APP_BACKEND_URL= REACT_APP_VERSION="$VERSION" yarn --cwd "$ROOT_DIR/frontend" build
 
 BUILD_ID="$(date -u +%Y%m%d-%H%M%S)-$$"
 ARCHIVE="$SCRIPT_DIR/rom-translator-${KIND}-v${VERSION}-${BUILD_ID}.tar.gz"
