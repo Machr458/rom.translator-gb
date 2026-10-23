@@ -43,8 +43,9 @@ def test_new_provider_defaults_are_listed():
     assert OPENAI_COMPATIBLE_BASE_URLS["groq"] == "https://api.groq.com/openai/v1"
     assert OPENAI_COMPATIBLE_BASE_URLS["freetheai"] == "https://api.freetheai.org/v1"
     openai_models = {model["id"] for model in PROVIDERS["openai"]["models"]}
-    assert PROVIDERS["openai"]["default"] == "gpt-6-luna"
-    assert {"gpt-6.1-sol", "gpt-6-luna"} <= openai_models
+    assert PROVIDERS["openai"]["default"] == "gpt-6-astra"
+    assert {"gpt-6-astra", "gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna"} == openai_models
+    assert not openai_models & {"gpt-5.4", "gpt-5.4-mini", "gpt-5", "gpt-4o"}
     for provider in ("groq", "freetheai"):
         info = PROVIDERS[provider]
         assert info["default"] in {model["id"] for model in info["models"]}

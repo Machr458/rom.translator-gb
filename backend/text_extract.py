@@ -235,6 +235,12 @@ def scan_ascii(data: bytes):
 # ---------- Classification ----------
 VOWELS = set("aeiouAEIOUéÉ")
 RARE = set("qxzjQXZJ")
+COMMON_STORY_WORDS = {
+    "a", "an", "and", "are", "as", "at", "be", "but", "can", "did", "do", "for", "from",
+    "got", "has", "have", "he", "her", "here", "i", "in", "is", "it", "me", "my", "of",
+    "on", "or", "our", "she", "so", "the", "they", "this", "to", "was", "we", "were",
+    "will", "with", "won", "you", "your", "win", "lose", "lost",
+}
 
 
 TOKEN_LEGEND = [
@@ -326,6 +332,8 @@ def _table_offsets(cands, min_run: int = 6):
 def _is_name(text: str, in_table: bool) -> bool:
     p = plain_text(text)
     if any(t in text for t in BREAK_TOKENS) or len(p) > 30:
+        return False
+    if {word.lower() for word in re.findall(r"[A-Za-z]+", p)} & COMMON_STORY_WORDS:
         return False
     return in_table
 

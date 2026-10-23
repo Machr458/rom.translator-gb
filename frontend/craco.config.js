@@ -10,6 +10,10 @@ const isDevServer = process.env.NODE_ENV !== "production";
 const config = {
   enableHealthCheck: process.env.ENABLE_HEALTH_CHECK === "true",
 };
+const localDevAllowedHosts = (process.env.LOCAL_DEV_ALLOWED_HOSTS || "")
+  .split(",")
+  .map((host) => host.trim())
+  .filter(Boolean);
 
 function makeDevServerV5Compatible(devServerConfig) {
   const {
@@ -56,6 +60,12 @@ function makeDevServerV5Compatible(devServerConfig) {
   };
 
   return compatibleConfig;
+}
+
+function isEmergentHost(value) {
+  if (typeof value !== "string" || value.includes(",")) return false;
+  const hostname = value.trim().replace(/:\d+$/, "").toLowerCase();
+  return hostname === "emergentagent.com" || hostname.endsWith(".emergentagent.com");
 }
 
 // Conditionally load health check modules only if enabled
@@ -145,7 +155,37 @@ if (isDevServer) {
 }
 
 const configureDevServer = webpackConfig.devServer;
-webpackConfig.devServer = (devServerConfig) =>
-  makeDevServerV5Compatible(configureDevServer(devServerConfig));
+webpackConfig.devServer = (devServerConfig) => {
+  devServerConfig = configureDevServer(devServerConfig);
+  const allowedHosts = new Set([
+    "localhost",
+    ".localhost",
+    "127.0.0.1",
+    ".emergentagent.com",
+  ]);
+  if (Array.isArray(devServerConfig.allowedHosts)) {
+    for (const host of devServerConfig.allowedHosts) {
+      if (typeof host === "string") allowedHosts.add(host);
+    }
+  }
+  for (const host of localDevAllowedHosts) allowedHosts.add(host);
+  devServerConfig.allowedHosts = [...allowedHosts];
+  const setupMiddlewares = devServerConfig.setupMiddlewares;
+  devServerConfig.setupMiddlewares = (middlewares, devServer) => {
+    middlewares.unshift({
+      name: "emergent-forwarded-host",
+      middleware: (req, _res, next) => {
+        const forwardedHost = req.headers["x-forwarded-host"];
+        if (isEmergentHost(forwardedHost)) {
+          req.headers.host = forwardedHost;
+          if (req.headers[":authority"]) req.headers[":authority"] = forwardedHost;
+        }
+        next();
+      },
+    });
+    return setupMiddlewares ? setupMiddlewares(middlewares, devServer) : middlewares;
+  };
+  return makeDevServerV5Compatible(devServerConfig);
+};
 
 module.exports = webpackConfig;

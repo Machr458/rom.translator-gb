@@ -36,6 +36,21 @@ def test_single_word_pokemon_name_in_fixed_stride_table_is_excluded():
     assert set(names_in_table) <= names
 
 
+def test_short_result_messages_in_fixed_stride_table_are_translatable():
+    candidates_text = (
+        "YOU WIN", "BULBASAUR", "You win", "IVYSAUR", "YOU LOSE", "VENUSAUR",
+        "You lose", "CHARMANDER",
+    )
+    candidates = [(offset * 16, len(text), text) for offset, text in enumerate(candidates_text)]
+
+    story, names, _ = classify(candidates)
+
+    assert {"YOU WIN", "You win", "YOU LOSE", "You lose"} <= {item[2] for item in story}
+    assert {"BULBASAUR", "IVYSAUR", "VENUSAUR", "CHARMANDER"} <= names
+    assert "YOU WIN" not in names
+    assert "YOU LOSE" not in names
+
+
 def test_fixed_stride_name_table_does_not_crash():
     candidates = [(offset * 16, 8, name) for offset, name in enumerate(
         ("BULBASAUR", "IVYSAUR", "VENUSAUR", "CHARMANDER", "CHARMELEON", "CHARIZARD")
@@ -92,49 +107,74 @@ def test_translation_rejects_added_page_breaks():
     assert translated[0].translated == original
 
 
-def test_translation_rejects_over_capacity_output_and_stale_cache_value():
-    from server import _translation_fits_buffer
+def test_long_translation_and_reflow_are_accepted_when_tokens_are_preserved():
+    from server import _translation_preserves_structure
 
     source = "Phone numbers are{n}stored in memory.{p}Just choose a name{n}you want to call.{p}Gee, isn't that{n}convenient?"
     oversized = "Telefonni cisla{n}se ukladaji do{p}pameti. Staci vybrat{n}jmeno, kteremu{p}chces zavolat.{p}To je ale pohodlne,{n}co?"
     fitted = "Telefonni cisla{n}jsou v pameti.{p}Staci vybrat{n}jmeno k zavolani.{p}To je pohodlne,{n}ze?"
+    wrapped = "Telefonni{n}cisla se ukladaji do{p}pameti. Staci vybrat{n}jmeno, kteremu{p}chces zavolat.{p}To je ale pohodlne,{n}co?"
 
-    assert not _translation_fits_buffer(source, oversized, "pokemon_gen2", 99)
-    assert _translation_fits_buffer(source, fitted, "pokemon_gen2", 99)
+    assert _translation_preserves_structure(source, oversized)
+    assert _translation_preserves_structure(source, fitted)
+    assert _translation_preserves_structure(source, wrapped)
+    assert not _translation_preserves_structure(source, fitted.replace("{p}", "", 1))
+    assert not _translation_preserves_structure(source, wrapped.replace("{p}", "{p}{p}", 1))
+    assert not _translation_preserves_structure(source, source.replace("{n}", "", 1).replace("{p}", "{n}{p}", 1))
 
 
-def test_over_capacity_translation_retries_with_compact_prompt():
+def test_oversized_ascii_patch_writes_fitting_prefix_as_last_resort():
+    from server import apply_translations
+
+    data = bytearray(b"HELLO\x00")
+    patched = apply_translations(
+        data,
+        "ascii",
+        {"HELLO": [(0, 5)]},
+        [("HELLO", "A MUCH LONGER TRANSLATION")],
+    )
+
+    assert patched == 1
+    assert bytes(data) == b"A MUC\x00"
+
+
+def test_long_translation_is_not_retried_or_shortened_to_fit():
     from server import ExtractedString, _translate_batch
 
     source = "Phone numbers are{n}stored in memory.{p}Just choose a name{n}you want to call.{p}Gee, isn't that{n}convenient?"
     oversized = "Telefonni cisla{n}se ukladaji do{p}pameti. Staci vybrat{n}jmeno, kteremu{p}chces zavolat.{p}To je ale pohodlne,{n}co?"
-    fitted = "Telefonni cisla{n}jsou v pameti.{p}Staci vybrat{n}jmeno k zavolani.{p}To je pohodlne,{n}ze?"
     item = ExtractedString(id="phone", offset=0, length=99, text=source)
     calls = []
 
     async def fake_call(prompt, provider, model, api_key):
         calls.append(prompt)
-        translated = oversized if len(calls) == 1 else fitted
-        return json.dumps([{"id": "phone", "translated": translated}])
+        return json.dumps([{"id": "phone", "translated": oversized}])
 
     with patch("server._call_llm", side_effect=fake_call):
         result = asyncio.run(_translate_batch(
             "Czech", [item], "freetheai", "test-model", "test-key", encoding="pokemon_gen2"
         ))
 
-    assert len(calls) == 2
-    assert "CORRECTION:" in calls[1]
-    assert result[0].translated == fitted
+    assert len(calls) == 1
+    assert "CORRECTION:" not in calls[0]
+    assert result[0].translated == oversized
 
 
-def test_over_capacity_cache_entry_is_retranslated():
+@pytest.mark.parametrize(
+    ("cached_kind", "expected_cached", "expected_translation_calls"),
+    [("over_capacity", 1, 0), ("unchanged", 0, 1)],
+)
+def test_cache_keeps_full_translations_but_retranslates_unchanged_values(
+    cached_kind, expected_cached, expected_translation_calls
+):
     import server
     from server import ExtractedString, TranslatedString, TranslateRequest
     from unittest.mock import AsyncMock
 
     source = "Phone numbers are{n}stored in memory.{p}Just choose a name{n}you want to call.{p}Gee, isn't that{n}convenient?"
-    cached = "Telefonni cisla{n}se ukladaji do{p}pameti. Staci vybrat{n}jmeno, kteremu{p}chces zavolat.{p}To je ale pohodlne,{n}co?"
+    oversized = "Telefonni cisla{n}se ukladaji do{p}pameti. Staci vybrat{n}jmeno, kteremu{p}chces zavolat.{p}To je ale pohodlne,{n}co?"
     fitted = "Telefonni cisla{n}jsou v pameti.{p}Staci vybrat{n}jmeno k zavolani.{p}To je pohodlne,{n}ze?"
+    cached = source if cached_kind == "unchanged" else oversized
     item = ExtractedString(id="phone-cache", offset=0, length=99, text=source)
     request = TranslateRequest(
         session_id="cache-test",
@@ -171,10 +211,13 @@ def test_over_capacity_cache_entry_is_retranslated():
 
     job = server.JOBS[started["job_id"]]
     assert job["status"] == "done"
-    assert job["cached_count"] == 0
-    assert translated_batch.await_count == 1
-    assert job["translations"][0]["translated"] == fitted
-    cache_delete.assert_awaited_once_with([server._cache_key(source, "cs")])
+    assert job["cached_count"] == expected_cached
+    assert translated_batch.await_count == expected_translation_calls
+    assert job["translations"][0]["translated"] == (oversized if cached_kind == "over_capacity" else fitted)
+    if cached_kind == "unchanged":
+        cache_delete.assert_awaited_once_with([server._cache_key(source, "cs")])
+    else:
+        cache_delete.assert_not_awaited()
 
 
 def test_missing_model_rows_are_retried_in_smaller_batches():

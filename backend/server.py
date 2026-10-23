@@ -158,14 +158,12 @@ PROVIDERS = {
         "label": "OpenAI",
         "keyHint": "sk-... from platform.openai.com",
         "models": [
-            {"id": "gpt-6.1-sol", "label": "GPT-6.1 Sol (higher quality)", "pricing": {"input": 2.0, "output": 10.0}},
-            {"id": "gpt-6-luna", "label": "GPT-6 Luna (recommended, efficient)", "pricing": {"input": 0.10, "output": 0.50}},
-            {"id": "gpt-5.4", "label": "GPT-5.4", "pricing": {"input": 1.25, "output": 10.0}},
-            {"id": "gpt-5.4-mini", "label": "GPT-5.4 Mini (fast)", "pricing": {"input": 0.15, "output": 0.60}},
-            {"id": "gpt-5", "label": "GPT-5", "pricing": {"input": 1.25, "output": 10.0}},
-            {"id": "gpt-4o", "label": "GPT-4o", "pricing": {"input": 2.50, "output": 10.0}},
+            {"id": "gpt-6-astra", "label": "GPT-6 Astra (recommended)", "pricing": {"input": 10.0, "output": 50.0}},
+            {"id": "gpt-6.1-sol", "label": "GPT-6.1 Sol (high quality)", "pricing": {"input": 2.0, "output": 10.0}},
+            {"id": "gpt-6-sol", "label": "GPT-6 Sol (balanced)", "pricing": {"input": 2.0, "output": 10.0}},
+            {"id": "gpt-6-luna", "label": "GPT-6 Luna (fast, low cost)", "pricing": {"input": 0.10, "output": 0.50}},
         ],
-        "default": "gpt-6-luna",
+        "default": "gpt-6-astra",
     },
     "groq": {
         "label": "Groq",
@@ -225,11 +223,18 @@ import hashlib
 
 # In-memory job registry for async translation
 JOBS: dict = {}
+CACHE_TRANSLATION_REVISION = "2"
 
 
 def _cache_key(text: str, target_lang: str) -> str:
-    """Deterministic cache key: hash of (text, target lang). Provider/model intentionally
-    excluded so a translation done once is reused for the same language regardless of AI."""
+    """Versioned key so translations from older prompt rules are regenerated."""
+    h = hashlib.sha256(
+        f"{CACHE_TRANSLATION_REVISION}\x1f{target_lang}\x1f{text}".encode("utf-8")
+    ).hexdigest()
+    return h[:32]
+
+
+def _legacy_cache_key(text: str, target_lang: str) -> str:
     h = hashlib.sha256(f"{target_lang}\x1f{text}".encode("utf-8")).hexdigest()
     return h[:32]
 
@@ -244,7 +249,11 @@ async def _cache_lookup(texts_by_lang: dict) -> dict:
         for t in texts:
             k = _cache_key(t, lang)
             all_keys.append(k)
-            key_meta[k] = (lang, t)
+            key_meta[k] = (lang, t, True)
+            legacy_key = _legacy_cache_key(t, lang)
+            if legacy_key not in key_meta:
+                all_keys.append(legacy_key)
+                key_meta[legacy_key] = (lang, t, False)
     if not all_keys:
         return hits
     with _db_connect() as conn:
@@ -252,13 +261,17 @@ async def _cache_lookup(texts_by_lang: dict) -> dict:
             keys = all_keys[start:start + 900]
             placeholders = ",".join("?" for _ in keys)
             rows = conn.execute(
-                f"SELECT key, translated FROM translation_cache WHERE key IN ({placeholders})",
+                f"SELECT key, translated, manual FROM translation_cache WHERE key IN ({placeholders})",
                 keys,
             ).fetchall()
             for row in rows:
                 meta = key_meta.get(row["key"])
-                if meta:
-                    hits[meta] = row["translated"]
+                if not meta:
+                    continue
+                lang, text, is_current = meta
+                result_key = (lang, text)
+                if is_current or (row["manual"] and result_key not in hits):
+                    hits[result_key] = row["translated"]
     return hits
 
 
@@ -553,10 +566,14 @@ def _apply_gen3_translations(data: bytearray, occ: dict, pairs) -> int:
             end = cursor + len(payload)
             if not sites or end > GBA_MAX_ROM_SIZE:
                 logging.warning(
-                    "Leaving oversized Gen3 text unchanged at %#x: %s",
+                    "Could not relocate oversized Gen3 text at %#x; writing the portion that fits: %s",
                     offset,
                     "no direct GBA pointers found" if not sites else "32 MiB ROM limit reached",
                 )
+                data[offset:offset + length + 1] = patch_payload(
+                    "pokemon_gen3", translated, length, terminator
+                )
+                string_changed = changed = True
                 continue
 
             if cursor > len(data):
@@ -617,33 +634,6 @@ def _find_gb_free_space(data: bytearray, bank: int, required: int, referenced_ta
     return run_start if end - run_start >= required else None
 
 
-def _translation_limits_for_rom(data: bytearray, encoding: str, strings: list, occurrences: dict) -> dict:
-    limits = {item.id: item.length for item in strings}
-    if encoding not in {"pokemon_gen1", "pokemon_gen2"}:
-        return limits
-
-    targets = {
-        offset
-        for item in strings
-        for offset, _length in occurrences.get(item.text, [(item.offset, item.length)])
-    }
-    references, referenced_targets = _find_gb_direct_references(data, targets)
-    for item in strings:
-        capacities = []
-        for offset, length in occurrences.get(item.text, [(item.offset, item.length)]):
-            bank = offset // GB_ROM_BANK_SIZE
-            destination = _find_gb_free_space(data, bank, 1, referenced_targets, set())
-            if not references.get(offset) or destination is None:
-                capacities.append(length)
-                continue
-            bank_end = min(len(data), (bank + 1) * GB_ROM_BANK_SIZE)
-            free_bytes = bank_end - destination - 1
-            capacities.append(max(length, min(free_bytes, length * 2)))
-        if capacities:
-            limits[item.id] = min(capacities)
-    return limits
-
-
 def _update_gb_global_checksum(data: bytearray):
     if len(data) <= 0x14F:
         return
@@ -684,7 +674,15 @@ def _apply_gb_translations(data: bytearray, encoding: str, occ: dict, pairs) -> 
                 data, bank, len(encoded) + 1, referenced_targets, reserved
             )
             if not sites or destination is None:
-                logging.warning("Leaving oversized Gen%d text unchanged at %#x: no safe same-bank target", 1 if encoding == "pokemon_gen1" else 2, offset)
+                logging.warning(
+                    "Could not relocate oversized Gen%d text at %#x; writing the portion that fits",
+                    1 if encoding == "pokemon_gen1" else 2,
+                    offset,
+                )
+                data[offset:offset + length + 1] = patch_payload(
+                    encoding, translated, length, terminator
+                )
+                text_changed = changed = True
                 continue
 
             data[destination:destination + len(encoded)] = encoded
@@ -714,11 +712,17 @@ def apply_translations(data: bytearray, encoding: str, occ: dict, pairs) -> int:
     for orig, tran in pairs:
         if not tran or tran.strip() == orig.strip() or orig not in occ:
             continue
+        text_changed = False
         for off, length in occ[orig]:
+            raw = tran.encode("ascii", errors="replace")
+            if len(raw) > length:
+                logging.warning("No relocation available for oversized text at %#x; writing the portion that fits", off)
             term = data[off + length] if off + length < len(data) else 0
             payload = patch_payload(encoding, tran, length, term)
             data[off:off + len(payload)] = payload
-        patched += 1
+            text_changed = True
+        if text_changed:
+            patched += 1
     return patched
 
 
@@ -922,12 +926,7 @@ async def rom_cache_preview(req: CachePreviewRequest):
         raise HTTPException(status_code=404, detail="ROM session not found")
 
     import asyncio
-    rom_data = await asyncio.to_thread(rom_file.read_bytes)
     encoding = sess.get("encoding", "ascii")
-    _, _, occurrences = await asyncio.to_thread(
-        extract_story, rom_data, encoding, sess.get("scan_mode", "bytewise")
-    )
-    limits = _translation_limits_for_rom(bytearray(rom_data), encoding, req.strings, occurrences)
     hits = await _cache_lookup({req.target_language: {item.text for item in req.strings}})
 
     translations = []
@@ -936,7 +935,7 @@ async def rom_cache_preview(req: CachePreviewRequest):
         translated = hits.get((req.target_language, item.text))
         if translated is None:
             continue
-        if not _translation_fits_buffer(item.text, translated, encoding, limits.get(item.id, item.length)):
+        if not _translation_preserves_structure(item.text, translated):
             rejected_count += 1
             continue
         translations.append({"id": item.id, "original": item.text, "translated": translated})
@@ -986,6 +985,11 @@ def _build_translation_prompt(target_lang_name: str, strings: List[ExtractedStri
         if extra else
         "4. Only use printable ASCII characters (a-z, A-Z, 0-9, punctuation, space). No accents, no unicode — Gameboy fonts can't render them.\n"
     )
+    wrap_rule = (
+        "For dialogue, reflow lines to the Game Boy text window width (about 18 character cells). Break only between words; "
+        "account for narrow letters, and avoid isolated one-letter lines. You may move {n} to a better word boundary.\n"
+        if encoding in {"pokemon_gen1", "pokemon_gen2"} else ""
+    )
     gloss_rule = (
         "8. These are proper names from the game (Pokemon, moves, items, places, characters). "
         f"Keep them EXACTLY unchanged wherever they appear: {', '.join(glossary)}\n"
@@ -1006,7 +1010,6 @@ def _build_translation_prompt(target_lang_name: str, strings: List[ExtractedStri
             "id": s.id,
             "text": s.text,
             "segments": segments,
-            "max_bytes": s.length,
             "page_count": s.text.count("{p}") + 1,
         }, separators=(",", ":")))
     joined = "\n".join(lines)
@@ -1015,19 +1018,21 @@ def _build_translation_prompt(target_lang_name: str, strings: List[ExtractedStri
         f"into {target_lang_name}.\n\n"
         f"IMPORTANT RULES:\n"
         f"1. Highest priority: produce a complete, faithful, natural translation of the entire source, including every word, "
-        f"clause, qualifier, and small function word. max_bytes is available capacity, NOT a target for shortening. "
-        f"Use safe extra capacity when provided. Never abbreviate, clip, summarize, or omit content for brevity. "
-        f"If the complete translation cannot fit, return the original unchanged instead of a shortened translation.\n"
+        f"clause, qualifier, and small function word. Never abbreviate, clip, summarize, or omit content to fit the original ROM allocation.\n"
         f"2. Preserve punctuation and any leading/trailing spaces exactly.\n"
         f"3. Do NOT translate obvious code identifiers, file names, register names, or gibberish (return them unchanged).\n"
         f"{charset_rule}"
+        f"{wrap_rule}"
         f'5. Do NOT include backslash (\\) in the translated text. If original has a backslash, replace it with "/". '
         f"Do NOT use any escape sequences.\n"
         f'6. Return STRICT RFC 8259 JSON only — a single JSON array of objects with exactly two keys: "id" and "translated". '
         f"No prose, no code fences, no markdown. Each object on its own line for readability is OK.\n"
         f"7. Texts contain game control tokens in curly braces, e.g. {{n}} new line, {{l}} scroll line, {{p}} new text box, "
-        f"{{PLAYER}}, {{RIVAL}}, {{STR1}}, {{FC:01:02}}. They are NOT words: never translate, rename, remove, add, or reorder them. "
-        f"Translate every text segment in order and keep it attached to the same neighboring control tokens. "
+        f"{{PLAYER}}, {{RIVAL}}, {{STR1}}, {{FC:01:02}}. They are NOT words: never translate, rename, remove, or reorder them. "
+        f"Translate every text segment in order. You may move {{n}} within the same page and add extra {{n}} tokens between words "
+        f"to wrap translated lines to the text window width; never add any other token. "
+        f"but keep every token exactly once and in its original order. Keep {{l}}, {{p}}, {{page}}, {{scroll}}, and all variable or command tokens "
+        f"at their semantic positions. Never split a word. "
         f"Do not merge segments, omit words, summarize, paraphrase away details, or use abbreviations. "
         f"For all-caps labels, the translated segment must contain at least the source_word_count shown in its segment record. "
         f"Keep the exact page_count and exact number/order of {{p}} page breaks. Put {{p}} only between complete sentences or clauses; "
@@ -1040,17 +1045,30 @@ def _build_translation_prompt(target_lang_name: str, strings: List[ExtractedStri
     )
 
 
-def _translation_fits_buffer(source: str, translated: str, encoding: str, max_bytes: int) -> bool:
+def _translation_preserves_structure(source: str, translated: str) -> bool:
     if not isinstance(translated, str):
         return False
     source_parts = [part for part in re.split(r"(\{[^{}]{1,16}\})", source) if part]
     translated_parts = [part for part in re.split(r"(\{[^{}]{1,16}\})", translated) if part]
-    source_layout = [part for part in source_parts if TOKEN_RE.fullmatch(part) and part in BREAK_SET]
-    translated_layout = [part for part in translated_parts if TOKEN_RE.fullmatch(part) and part in BREAK_SET]
-    if required_tokens(source) != required_tokens(translated) or source_layout != translated_layout:
+    source_tokens = [part for part in source_parts if TOKEN_RE.fullmatch(part)]
+    translated_tokens = [part for part in translated_parts if TOKEN_RE.fullmatch(part)]
+    source_fixed_tokens = [part for part in source_tokens if part != "{n}"]
+    translated_fixed_tokens = [part for part in translated_tokens if part != "{n}"]
+    source_pages = source.split("{p}")
+    translated_pages = translated.split("{p}")
+    if (
+        required_tokens(source) != required_tokens(translated)
+        or source_fixed_tokens != translated_fixed_tokens
+        or translated_tokens.count("{n}") < source_tokens.count("{n}")
+        or len(source_pages) != len(translated_pages)
+        or any(
+            translated_page.count("{n}") < source_page.count("{n}")
+            for source_page, translated_page in zip(source_pages, translated_pages)
+        )
+    ):
         return False
-    if [part for part in source_parts if TOKEN_RE.fullmatch(part)] != [part for part in translated_parts if TOKEN_RE.fullmatch(part)]:
-        return False
+    source_parts = [part for part in re.split(r"(\{[^{}]{1,16}\})", source.replace("{n}", "")) if part]
+    translated_parts = [part for part in re.split(r"(\{[^{}]{1,16}\})", translated.replace("{n}", "")) if part]
     for source_part, translated_part in zip(source_parts, translated_parts):
         if TOKEN_RE.fullmatch(source_part):
             continue
@@ -1061,9 +1079,7 @@ def _translation_fits_buffer(source: str, translated: str, encoding: str, max_by
                 return False
             if len(source_words) > 1 and re.search(r"\b[A-Za-zÀ-ž]{1,3}\.$", translated_part.strip()):
                 return False
-    codec = CODECS.get(encoding)
-    encoded_length = len(codec.encode(translated)) if codec else len(translated.encode("ascii", errors="replace"))
-    return encoded_length <= max_bytes
+    return True
 
 
 async def _call_llm(prompt: str, provider: str, model: Optional[str], api_key: Optional[str]) -> str:
@@ -1200,26 +1216,21 @@ async def _translate_batch(
     encoding: str = "ascii",
     names: Optional[set] = None,
     _retry: bool = False,
-    max_bytes_by_id: Optional[dict] = None,
 ) -> List[TranslatedString]:
     if not batch:
         return []
 
     protected_batch = []
     protected_terms = {}
-    max_bytes_by_id = max_bytes_by_id or {}
     for item in batch:
         protected_text, replacements = protect_glossary_terms(item.text, names or set())
-        protected_batch.append(item.model_copy(update={
-            "text": protected_text,
-            "length": max_bytes_by_id.get(item.id, item.length),
-        }))
+        protected_batch.append(item.model_copy(update={"text": protected_text}))
         protected_terms[item.id] = replacements
     prompt = _build_translation_prompt(target_lang_name, protected_batch, encoding)
     if _retry:
         prompt += (
-            "\nCORRECTION: The previous answer exceeded a string's byte capacity or changed its page/control tokens. "
-            "Rewrite the complete translation without abbreviating or dropping meaning. Use available relocation capacity when max_bytes exceeds the source buffer. If the full phrase cannot fit, return the original unchanged. Preserve every token and page_count exactly."
+            "\nCORRECTION: The previous answer changed required page/control tokens. Rewrite the complete translation without abbreviating or dropping meaning. "
+            "Preserve every token and page_count exactly; ROM storage capacity is not a reason to shorten it."
         )
 
     # Honor the selected provider; never spend the app's Emergent balance as an implicit fallback.
@@ -1230,8 +1241,8 @@ async def _translate_batch(
         if "timeout" in msg and len(batch) > 3 and _depth < 3:
             mid = len(batch) // 2
             logging.warning(f"LLM timeout at depth={_depth}, splitting batch of {len(batch)}")
-            left = await _translate_batch(target_lang_name, batch[:mid], provider, model, api_key, _depth + 1, encoding, names, _retry, max_bytes_by_id)
-            right = await _translate_batch(target_lang_name, batch[mid:], provider, model, api_key, _depth + 1, encoding, names, _retry, max_bytes_by_id)
+            left = await _translate_batch(target_lang_name, batch[:mid], provider, model, api_key, _depth + 1, encoding, names, _retry)
+            right = await _translate_batch(target_lang_name, batch[mid:], provider, model, api_key, _depth + 1, encoding, names, _retry)
             return left + right
         raise
 
@@ -1247,8 +1258,8 @@ async def _translate_batch(
         if len(batch) > 3 and _depth < 3:
             mid = len(batch) // 2
             logging.warning(f"Invalid JSON at depth={_depth}, splitting batch of {len(batch)} into {mid}+{len(batch)-mid}")
-            left = await _translate_batch(target_lang_name, batch[:mid], provider, model, api_key, _depth + 1, encoding, names, _retry, max_bytes_by_id)
-            right = await _translate_batch(target_lang_name, batch[mid:], provider, model, api_key, _depth + 1, encoding, names, _retry, max_bytes_by_id)
+            left = await _translate_batch(target_lang_name, batch[:mid], provider, model, api_key, _depth + 1, encoding, names, _retry)
+            right = await _translate_batch(target_lang_name, batch[mid:], provider, model, api_key, _depth + 1, encoding, names, _retry)
             return left + right
         raise HTTPException(status_code=502, detail="Translator returned invalid JSON")
 
@@ -1264,8 +1275,8 @@ async def _translate_batch(
             logging.warning(
                 f"Translator omitted or returned empty text for {len(missing)}/{len(batch)} items; splitting batch"
             )
-            left = await _translate_batch(target_lang_name, batch[:mid], provider, model, api_key, _depth + 1, encoding, names, _retry, max_bytes_by_id)
-            right = await _translate_batch(target_lang_name, batch[mid:], provider, model, api_key, _depth + 1, encoding, names, _retry, max_bytes_by_id)
+            left = await _translate_batch(target_lang_name, batch[:mid], provider, model, api_key, _depth + 1, encoding, names, _retry)
+            right = await _translate_batch(target_lang_name, batch[mid:], provider, model, api_key, _depth + 1, encoding, names, _retry)
             return left + right
         raise HTTPException(status_code=502, detail="Translator omitted or returned empty translations")
 
@@ -1280,17 +1291,16 @@ async def _translate_batch(
             retry_items.append(s)
             continue
         tr = restore_glossary_terms(tr, protected_terms[s.id])
-        max_bytes = max_bytes_by_id.get(s.id, s.length)
-        if not _translation_fits_buffer(s.text, tr, encoding, max_bytes):
+        if not _translation_preserves_structure(s.text, tr):
             retry_items.append(s)
         else:
             results_by_id[s.id] = tr
 
     if retry_items and not _retry:
-        logging.info("Retrying %d translations that exceeded byte capacity or changed control tokens", len(retry_items))
+        logging.info("Retrying %d translations that changed control tokens", len(retry_items))
         retried = await _translate_batch(
             target_lang_name, retry_items, provider, model, api_key, _depth, encoding, names,
-            _retry=True, max_bytes_by_id=max_bytes_by_id,
+            _retry=True,
         )
         results_by_id.update({item.id: item.translated for item in retried})
     for item in retry_items:
@@ -1398,20 +1408,6 @@ async def translate_rom_start(req: TranslateRequest):
     job_names = set(_get_glossary(req.session_id))
 
     async def worker():
-        translation_limits = {item.id: item.length for item in req.strings}
-        rom_file = rom_path(req.session_id)
-        if job_encoding in {"pokemon_gen1", "pokemon_gen2"} and rom_file.exists():
-            try:
-                rom_data = await asyncio.to_thread(rom_file.read_bytes)
-                _, _, occurrences = await asyncio.to_thread(
-                    extract_story, rom_data, job_encoding, (sess_doc or {}).get("scan_mode", "bytewise")
-                )
-                translation_limits = _translation_limits_for_rom(
-                    bytearray(rom_data), job_encoding, req.strings, occurrences
-                )
-            except Exception as e:
-                logging.warning(f"Could not determine safe text relocation limits: {e}")
-
         # === CACHE LOOKUP: skip strings we've already translated ===
         cache_hits = await _cache_lookup({req.target_language: {s.text for s in req.strings}})
         cached_out = []
@@ -1422,8 +1418,8 @@ async def translate_rom_start(req: TranslateRequest):
             cached_translation = cache_hits.get(key)
             if cached_translation is None:
                 remaining.append(s)
-            elif _translation_fits_buffer(
-                s.text, cached_translation, job_encoding, translation_limits.get(s.id, s.length)
+            elif cached_translation.strip() != s.text.strip() and _translation_preserves_structure(
+                s.text, cached_translation
             ):
                 cached_out.append(TranslatedString(id=s.id, original=s.text, translated=cached_translation))
             else:
@@ -1431,7 +1427,7 @@ async def translate_rom_start(req: TranslateRequest):
                 remaining.append(s)
         if stale_cache_keys:
             await _cache_delete_many(stale_cache_keys)
-            logging.info("Removed %d stale cache entries that no longer fit ROM constraints", len(stale_cache_keys))
+            logging.info("Removed %d stale cache entries with invalid translations", len(stale_cache_keys))
         if cached_out:
             JOBS[job_id]["cached_count"] = len(cached_out)
             JOBS[job_id]["translated_count"] += len(cached_out)
@@ -1464,7 +1460,6 @@ async def translate_rom_start(req: TranslateRequest):
                 try:
                     unique_out = await _translate_batch(
                         lang_name, batch, provider, req.model, req.api_key, 0, job_encoding, job_names,
-                        max_bytes_by_id=translation_limits,
                     )
                     translated_by_text = {t.original: t.translated for t in unique_out}
                     out = [

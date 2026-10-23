@@ -46,7 +46,7 @@ def test_long_gb_translation_relocates_within_bank(encoding, codec):
     ("encoding", "codec"),
     [("pokemon_gen1", GEN1), ("pokemon_gen2", GEN2)],
 )
-def test_long_gb_translation_without_direct_reference_is_unchanged(encoding, codec):
+def test_long_gb_translation_without_direct_reference_falls_back_to_fitting_text(encoding, codec):
     original = "HELLO"
     translated = "A LONGER GAME TEXT"
     offset = 0x4123
@@ -54,8 +54,6 @@ def test_long_gb_translation_without_direct_reference_is_unchanged(encoding, cod
     data = bytearray(b"\x00" * 0x8000)
     data[offset:offset + len(encoded)] = encoded
     data[offset + len(encoded)] = 0x50
-    before = bytes(data)
-
     patched = apply_translations(
         data,
         encoding,
@@ -63,5 +61,5 @@ def test_long_gb_translation_without_direct_reference_is_unchanged(encoding, cod
         [(original, translated)],
     )
 
-    assert patched == 0
-    assert bytes(data) == before
+    assert patched == 1
+    assert codec.decode(data, offset)[1] == "A LON"

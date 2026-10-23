@@ -41,14 +41,12 @@ def test_long_gen3_translation_relocates_and_updates_all_pointers():
     assert data[0xBD] == (-sum(data[0xA0:0xBD]) - 0x19) & 0xFF
 
 
-def test_long_gen3_translation_without_pointer_is_left_unchanged():
+def test_long_gen3_translation_without_pointer_falls_back_to_fitting_text():
     original = "HELLO"
     translated = "A MUCH LONGER TRANSLATION"
     data, encoded, _ = _rom_with_text_and_pointers(original)
     data[0xC1:0xC5] = b"\x00" * 4
     data[0xD0:0xD4] = b"\x00" * 4
-    before = bytes(data)
-
     patched = apply_translations(
         data,
         "pokemon_gen3",
@@ -56,5 +54,5 @@ def test_long_gen3_translation_without_pointer_is_left_unchanged():
         [(original, translated)],
     )
 
-    assert patched == 0
-    assert bytes(data) == before
+    assert patched == 1
+    assert GEN3.decode(data, 0x200)[1] == "A MUC"

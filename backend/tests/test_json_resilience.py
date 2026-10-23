@@ -26,6 +26,30 @@ if not BASE_URL:
 BASE_URL = (BASE_URL or "").rstrip("/")
 
 
+def test_cache_revision_ignores_old_ai_results_and_keeps_manual_entries(tmp_path, monkeypatch):
+    monkeypatch.setattr(server, "DB_PATH", tmp_path / "cache.sqlite3")
+    server._init_db()
+    asyncio.run(server._cache_store_many([
+        {
+            "key": server._legacy_cache_key("old automatic", "cs"),
+            "source": "old automatic",
+            "translated": "stary automaticky preklad",
+            "target_lang": "cs",
+        },
+        {
+            "key": server._legacy_cache_key("manual override", "cs"),
+            "source": "manual override",
+            "translated": "rucne upraveno",
+            "target_lang": "cs",
+            "manual": True,
+        },
+    ]))
+
+    hits = asyncio.run(server._cache_lookup({"cs": {"old automatic", "manual override"}}))
+
+    assert hits == {("cs", "manual override"): "rucne upraveno"}
+
+
 # ---------- _lenient_json_parse ----------
 class TestLenientJsonParse:
     def test_valid_json(self):
@@ -172,7 +196,7 @@ class TestAutomaticTranslationBatching:
         translated_batches = []
         scheduled_workers = []
 
-        async def fake_translate(_lang, batch, *_args):
+        async def fake_translate(_lang, batch, *_args, **_kwargs):
             translated_batches.append([item.text for item in batch])
             return [
                 server.TranslatedString(id=item.id, original=item.text, translated="prelozeno")
@@ -236,18 +260,24 @@ class TestSQLiteEndpoints:
 
 # ---------- Prompt inspection ----------
 class TestPromptRules:
-    def test_prompt_includes_byte_capacity_and_page_layout(self):
+    def test_prompt_prioritizes_complete_translation_and_reflow(self):
         from server import _build_translation_prompt
         p = _build_translation_prompt("Czech", [ExtractedString(
             id="s1", text="Phone numbers are{n}stored in memory.{p}Next.", offset=0, length=29
         )], encoding="pokemon_gen2")
 
-        assert '"max_bytes":29' in p
+        assert '"max_bytes"' not in p
         assert '"page_count":2' in p
         assert "complete, faithful, natural translation of the entire source" in p.lower()
         assert "clause, qualifier, and small function word" in p.lower()
         assert "exact page_count and exact number/order of {p} page breaks" in p.lower()
         assert "never split a phrase across pages" in p.lower()
+        assert "reflow lines to the game boy text window width" in p.lower()
+        assert "you may move {n}" in p.lower()
+        assert "add extra {n} tokens between words" in p.lower()
+        assert "never add any other token" in p.lower()
+        assert "never abbreviate" in p.lower()
+        assert "return the original unchanged" not in p.lower()
         assert "do not target the source line length" in p.lower()
         assert "keep each line no longer than the original line" not in p.lower()
 
