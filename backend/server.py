@@ -995,6 +995,16 @@ def _sanitize_translation(text: str, encoding: str) -> str:
     return "".join(result)
 
 
+def _preserve_all_caps_style(source: str, translated: str) -> str:
+    source_text = re.sub(r"\{[^{}]{1,16}\}", "", source).strip()
+    if not source_text or not source_text.isupper():
+        return translated
+    return "".join(
+        part if re.fullmatch(r"\{[^{}]{1,16}\}", part) else part.upper()
+        for part in re.split(r"(\{[^{}]{1,16}\})", translated)
+    )
+
+
 def _build_translation_prompt(target_lang_name: str, strings: List[ExtractedString], encoding: str = "ascii", glossary: Optional[list] = None) -> str:
     extra = EXTRA_CHARS.get(encoding)
     charset_rule = (
@@ -1058,6 +1068,7 @@ def _build_translation_prompt(target_lang_name: str, strings: List[ExtractedStri
         f"but keep every token exactly once and in its original order. Keep {{l}}, {{p}}, {{page}}, {{scroll}}, and all variable or command tokens "
         f"at their semantic positions. Never split a word. "
         f"Do not merge segments, omit words, summarize, paraphrase away details, or use abbreviations. "
+        f"If a source text segment is ALL CAPS, write its translation in ALL CAPS too; never mix uppercase and lowercase in that translation. "
         f"For all-caps labels, the translated segment must contain at least the source_word_count shown in its segment record. "
         f"Keep the exact page_count and exact number/order of {{p}} page breaks. Put {{p}} only between complete sentences or clauses; "
         f"never split a phrase across pages. Do not target the source line length or make wording shorter just to match it; "
@@ -1328,6 +1339,8 @@ async def _translate_batch(
     for s in batch:
         protected_source = protected_by_id[s.id].text
         tr = by_id.get(s.id, protected_source)
+        tr = _sanitize_translation(tr, encoding)
+        tr = _preserve_all_caps_style(protected_source, tr)
         tr = _sanitize_translation(tr, encoding)
         if required_tokens(tr) != required_tokens(protected_source):
             retry_items.append(s)

@@ -112,6 +112,23 @@ def test_translation_retries_when_ai_copies_source_text():
     assert "left natural-language source text untranslated" in prompts[1]
 
 
+def test_translation_preserves_all_caps_source_style():
+    from server import ExtractedString, _translate_batch
+
+    original = "SCIENTIST"
+    item = ExtractedString(id="caps-test", offset=0, length=len(original), text=original)
+
+    async def fake_call(prompt, provider, model, api_key):
+        return json.dumps([{"id": "caps-test", "translated": "VEDec"}])
+
+    with patch("server._call_llm", side_effect=fake_call):
+        translated = asyncio.run(_translate_batch(
+            "Czech", [item], "freetheai", "test-model", "test-key"
+        ))
+
+    assert translated[0].translated == "VEDEC"
+
+
 def test_translation_does_not_return_source_when_ai_copies_it_twice():
     from server import ExtractedString, _translate_batch
 
