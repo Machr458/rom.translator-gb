@@ -296,7 +296,7 @@ export default function RomTranslator() {
             const fail = data.failed_count || 0;
             const cached = data.cached_count || 0;
             const fromCache = cached > 0 ? ` (${cached} from cache · free)` : "";
-            pushLog(`  DONE. ${ok} translated${fromCache}, ${fail} failed (kept as original).`, fail ? "info" : "ok");
+            pushLog(`  DONE. ${ok} translated${fromCache}, ${fail} failed (translation left blank).`, fail ? "info" : "ok");
             if (fail) {
               data.errors?.forEach((er) => pushLog(`  ! ${er}`, "err"));
               toast.warning(`${ok}/${data.total} translated; ${fail} failed.`);

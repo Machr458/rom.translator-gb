@@ -223,7 +223,7 @@ import hashlib
 
 # In-memory job registry for async translation
 JOBS: dict = {}
-CACHE_TRANSLATION_REVISION = "3"
+CACHE_TRANSLATION_REVISION = "4"
 
 
 def _cache_key(text: str, target_lang: str) -> str:
@@ -399,6 +399,7 @@ class TranslatedString(BaseModel):
     id: str
     original: str
     translated: str
+    error: Optional[str] = None
 
 class TranslateResponse(BaseModel):
     session_id: str
@@ -1266,8 +1267,11 @@ async def _translate_batch(
     prompt = _build_translation_prompt(target_lang_name, protected_batch, encoding)
     if _retry:
         prompt += (
-            "\nCORRECTION: The previous answer changed required page/control tokens or violated line wrapping. Rewrite the complete translation without abbreviating or dropping meaning. "
-            "Preserve every token and page_count exactly; ROM storage capacity is not a reason to shorten it."
+            "\nCORRECTION: The previous answer left natural-language source text untranslated or violated a required structure rule. "
+            f"Translate every natural-language segment into {target_lang_name}. Do not copy English source text into the translation. "
+            "Only preserve protected game-name markers, control tokens, technical identifiers, or genuine gibberish. "
+            "Rewrite the complete translation without abbreviating or dropping meaning. Preserve every token and page_count exactly; "
+            "ROM storage capacity is not a reason to shorten it."
         )
 
     # Honor the selected provider; never spend the app's Emergent balance as an implicit fallback.
@@ -1318,6 +1322,7 @@ async def _translate_batch(
         raise HTTPException(status_code=502, detail="Translator omitted or returned empty translations")
 
     results_by_id = {}
+    errors_by_id = {}
     retry_items = []
     protected_by_id = {item.id: item for item in protected_batch}
     for s in batch:
@@ -1328,7 +1333,12 @@ async def _translate_batch(
             retry_items.append(s)
             continue
         tr = restore_glossary_terms(tr, protected_terms[s.id])
-        if not _translation_preserves_structure(s.text, tr, encoding):
+        unprotected_source = re.sub(r"\{KEEP\d{4}\}", "", protected_source)
+        copied_source = (
+            tr.strip() == s.text.strip()
+            and bool(re.search(r"[A-Za-z]", unprotected_source))
+        )
+        if copied_source or not _translation_preserves_structure(s.text, tr, encoding):
             retry_items.append(s)
         else:
             results_by_id[s.id] = tr
@@ -1339,11 +1349,39 @@ async def _translate_batch(
             target_lang_name, retry_items, provider, model, api_key, _depth, encoding, names,
             _retry=True,
         )
+        retry_results = {item.id: item for item in retried}
+        retry_items_by_id = {item.id: item for item in retry_items}
+        unresolved = [retry_items_by_id[item.id] for item in retried if item.error]
+        for start in range(0, len(unresolved), 5):
+            isolated = await _translate_batch(
+                target_lang_name,
+                unresolved[start:start + 5],
+                provider,
+                model,
+                api_key,
+                _depth,
+                encoding,
+                names,
+                _retry=True,
+            )
+            retry_results.update({item.id: item for item in isolated})
+        retried = [retry_results[item.id] for item in retry_items]
         results_by_id.update({item.id: item.translated for item in retried})
+        errors_by_id.update({item.id: item.error for item in retried if item.error})
     for item in retry_items:
-        results_by_id.setdefault(item.id, item.text)
+        if item.id not in results_by_id:
+            results_by_id[item.id] = ""
+            errors_by_id[item.id] = "AI returned untranslated or invalid text after retry."
 
-    return [TranslatedString(id=s.id, original=s.text, translated=results_by_id[s.id]) for s in batch]
+    return [
+        TranslatedString(
+            id=s.id,
+            original=s.text,
+            translated=results_by_id[s.id],
+            error=errors_by_id.get(s.id),
+        )
+        for s in batch
+    ]
 
 
 def _lenient_json_parse(text: str):
@@ -1483,7 +1521,12 @@ async def translate_rom_start(req: TranslateRequest):
                 # skip remaining batches instead of wasting time / retries.
                 if abort_flag["stop"]:
                     out = [
-                        TranslatedString(id=item.id, original=item.text, translated=item.text)
+                        TranslatedString(
+                            id=item.id,
+                            original=item.text,
+                            translated="",
+                            error=abort_flag.get("reason") or "Translation skipped after a previous batch failed.",
+                        )
                         for representative in batch
                         for item in remaining_groups[representative.text]
                     ]
@@ -1498,17 +1541,24 @@ async def translate_rom_start(req: TranslateRequest):
                     unique_out = await _translate_batch(
                         lang_name, batch, provider, req.model, req.api_key, 0, job_encoding, job_names,
                     )
-                    translated_by_text = {t.original: t.translated for t in unique_out}
+                    translated_by_text = {t.original: t for t in unique_out}
                     out = [
                         TranslatedString(
                             id=item.id,
                             original=item.text,
-                            translated=translated_by_text.get(representative.text, item.text),
+                            translated=(result.translated if (result := translated_by_text.get(representative.text)) else ""),
+                            error=result.error if result else "Translation result was missing.",
                         )
                         for representative in batch
                         for item in remaining_groups[representative.text]
                     ]
-                    real_translated = sum(1 for t in out if t.translated != t.original)
+                    failed_items = [t for t in out if t.error]
+                    JOBS[job_id]["failed_count"] += len(failed_items)
+                    if failed_items:
+                        err_msg = "AI left some strings untranslated after a correction attempt."
+                        if err_msg not in JOBS[job_id]["errors"]:
+                            JOBS[job_id]["errors"].append(err_msg)
+                    real_translated = sum(1 for t in out if not t.error and t.translated != t.original)
                     JOBS[job_id]["translated_count"] += real_translated
                     # === CACHE STORE: persist successful translations ===
                     to_store = [
@@ -1519,7 +1569,7 @@ async def translate_rom_start(req: TranslateRequest):
                             "target_lang": req.target_language,
                         }
                         for t, s in zip(unique_out, batch)
-                        if t.translated and t.translated != s.text
+                        if not t.error and t.translated and t.translated != s.text
                     ]
                     if to_store:
                         await _cache_store_many(to_store)
@@ -1528,7 +1578,7 @@ async def translate_rom_start(req: TranslateRequest):
                     err_msg = str(getattr(e, "detail", None) or e)[:250]
                     logging.warning(f"Batch failed: {err_msg}")
                     out = [
-                        TranslatedString(id=item.id, original=item.text, translated=item.text)
+                        TranslatedString(id=item.id, original=item.text, translated="", error=err_msg)
                         for representative in batch
                         for item in remaining_groups[representative.text]
                     ]

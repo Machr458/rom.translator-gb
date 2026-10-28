@@ -90,6 +90,47 @@ def test_translation_protects_detected_names_exactly():
     assert translated[0].translated == "Pouzil Pikachu Tackle Potion."
 
 
+def test_translation_retries_when_ai_copies_source_text():
+    from server import ExtractedString, _translate_batch
+
+    original = "Hello there."
+    item = ExtractedString(id="copy-test", offset=0, length=len(original), text=original)
+    prompts = []
+
+    async def fake_call(prompt, provider, model, api_key):
+        prompts.append(prompt)
+        translated = "Ahoj." if "CORRECTION:" in prompt else original
+        return json.dumps([{"id": "copy-test", "translated": translated}])
+
+    with patch("server._call_llm", side_effect=fake_call):
+        translated = asyncio.run(_translate_batch(
+            "Czech", [item], "freetheai", "test-model", "test-key"
+        ))
+
+    assert translated[0].translated == "Ahoj."
+    assert len(prompts) == 2
+    assert "left natural-language source text untranslated" in prompts[1]
+
+
+def test_translation_does_not_return_source_when_ai_copies_it_twice():
+    from server import ExtractedString, _translate_batch
+
+    original = "I have to find{n}stronger POKéMON."
+    item = ExtractedString(id="persistent-copy-test", offset=0, length=len(original), text=original)
+
+    async def fake_call(prompt, provider, model, api_key):
+        return json.dumps([{"id": "persistent-copy-test", "translated": original}])
+
+    with patch("server._call_llm", side_effect=fake_call):
+        translated = asyncio.run(_translate_batch(
+            "Czech", [item], "freetheai", "test-model", "test-key",
+            names={"POKéMON"},
+        ))
+
+    assert translated[0].translated == ""
+    assert translated[0].error == "AI returned untranslated or invalid text after retry."
+
+
 def test_translation_rejects_added_page_breaks():
     from server import ExtractedString, _translate_batch
 
