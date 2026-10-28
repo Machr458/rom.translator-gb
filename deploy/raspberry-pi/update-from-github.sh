@@ -2,7 +2,7 @@
 set -euo pipefail
 
 REPOSITORY="Machr458/rom.translator-gb"
-API_URL="https://api.github.com/repos/${REPOSITORY}/releases/latest"
+API_URL="https://api.github.com/repos/${REPOSITORY}/releases?per_page=100"
 
 if [[ "$EUID" -ne 0 ]]; then
   echo "Run this updater with sudo: curl -fsSL https://raw.githubusercontent.com/${REPOSITORY}/main/deploy/raspberry-pi/update-from-github.sh | sudo bash" >&2
@@ -25,7 +25,7 @@ if ! HTTP_STATUS="$(curl --silent --show-error --retry 3 \
 fi
 
 if [[ "$HTTP_STATUS" == "404" ]]; then
-  echo "No GitHub release is published yet. Push a vMAJOR.MINOR tag and wait for its release workflow to finish." >&2
+  echo "Could not find the GitHub releases list. Check the repository URL and try again." >&2
   exit 1
 fi
 
@@ -45,15 +45,24 @@ try:
 except (OSError, json.JSONDecodeError):
     raise SystemExit("GitHub returned an invalid release response.")
 
-assets = [
-    asset["browser_download_url"]
-    for asset in release.get("assets", [])
-    if re.fullmatch(r"rom-translator-update-v\d+\.\d+\.tar\.gz", asset.get("name", ""))
-    and asset.get("browser_download_url")
-]
+if not isinstance(release, list):
+  raise SystemExit("GitHub returned an invalid release list.")
+
+assets = []
+for item in release:
+  tag = item.get("tag_name", "")
+  version = re.fullmatch(r"v(\d+)\.(\d+)", tag)
+  if not version or item.get("draft") or item.get("prerelease"):
+    continue
+
+  expected_name = f"rom-translator-update-{tag}.tar.gz"
+  for asset in item.get("assets", []):
+    if asset.get("name") == expected_name and asset.get("browser_download_url"):
+      assets.append(((int(version.group(1)), int(version.group(2))), asset["browser_download_url"]))
+
 if not assets:
-    raise SystemExit("Latest GitHub release has no Raspberry Pi update archive. Wait for the release workflow to finish.")
-print(assets[0])
+  raise SystemExit("No published Raspberry Pi update archive was found in the GitHub releases.")
+print(max(assets, key=lambda item: item[0])[1])
 PY
 )"
 
