@@ -41,6 +41,7 @@ tar -czf "$ARCHIVE" -C "$ROOT_DIR" \
   frontend/build \
   deploy/raspberry-pi/install.sh \
   deploy/raspberry-pi/package.sh \
+  deploy/raspberry-pi/update-from-github.sh \
   deploy/raspberry-pi/rom-translator.nginx.conf \
   deploy/raspberry-pi/rom-translator-ngrok.service \
   deploy/raspberry-pi/rom-translator.service \

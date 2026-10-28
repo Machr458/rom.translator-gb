@@ -38,38 +38,22 @@ Pokud je ngrok nainstalovany a prihlaseny pod uzivatelem `pi`, instalator vytvor
 
 Aplikace nema vlastni prihlasovani. Verejny ngrok odkaz proto muze pouzit kdokoli, kdo ho zna; nevystavuj ho trvale bez dalsi ochrany pristupu.
 
-## Aktualizace
+## Aktualizace pres GitHub
 
-Po zmene aplikace vytvor update z terminalu projektu. Kazdy update automaticky zvysi minor verzi, napr. `1.2` na `1.3`, a stejnou verzi zobrazi v patičce aplikace:
-
-```bash
-bash deploy/raspberry-pi/package.sh update
-```
-
-Skript vypise napr. `deploy/raspberry-pi/rom-translator-update-v1.3.tar.gz`. Prenes tento soubor stejne jako vyse:
-
-```powershell
-scp C:\rom-translator-update-v1.3.tar.gz pi@192.168.0.120:/tmp/
-```
-
-V SSH terminalu na Pi rozbal novy archiv a spust instalator:
+Novy release se sestavi a publikuje po pushi tagu ve formatu `vMAJOR.MINOR`, napr. `v1.4`. Workflow pouzije tag jako verzi balicku a zobrazenou verzi aplikace. Pred vytvorenim tagu commitni zmeny na GitHub.
 
 ```bash
-tar -xzf /tmp/rom-translator-update-v1.3.tar.gz -C /home/pi
-cd /home/pi/rom-translator
-sudo bash deploy/raspberry-pi/install.sh
+git tag v1.4
+git push origin v1.4
 ```
 
-Instalator aplikaci restartuje. Databaze, prekladova cache a ROM zustavaji zachovane v `/var/lib/rom-translator`.
-
-Po aktualizaci muzes rucni tunel ukoncit pomoci `Ctrl+C` a spustit spravovanou sluzbu:
+Na Pi spusti tento jediny prikaz pro stazeni a instalaci posledniho verejneho releasu:
 
 ```bash
-sudo systemctl start rom-translator-ngrok
-sudo systemctl status rom-translator-ngrok
+curl -fsSL https://raw.githubusercontent.com/Machr458/rom.translator-gb/main/deploy/raspberry-pi/update-from-github.sh | sudo bash
 ```
 
-Stav tunelu po restartu Pi zkontroluj stejne. Logy jsou dostupne prikazem `sudo journalctl -u rom-translator-ngrok -n 50 --no-pager`.
+Updater zachova databazi, prekladovou cache i ROM v `/var/lib/rom-translator` a restartuje ngrok sluzbu, pokud je nastavena. Aktualizaci lze overit pres `sudo systemctl status rom-translator` a log tunelu pres `sudo journalctl -u rom-translator-ngrok -n 50 --no-pager`.
 
 ## Kontrola sluzby
 
