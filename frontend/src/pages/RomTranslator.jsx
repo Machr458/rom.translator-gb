@@ -222,7 +222,7 @@ export default function RomTranslator() {
       fd.append("scan_mode", scanMode);
       const r = await axios.post(`${API}/rom/extract`, fd, {
         headers: { "Content-Type": "multipart/form-data" },
-        timeout: 180000, // 3 min upper bound for very large ROMs
+        timeout: 900000,
         maxContentLength: Infinity,
         maxBodyLength: Infinity,
         onUploadProgress: (e) => {
@@ -243,8 +243,12 @@ export default function RomTranslator() {
       setStatus("error");
       const detail = e.response?.data?.detail || e.message || "Unknown error";
       pushLog(`! ERROR: ${detail}`, "err");
-      pushLog(`  Try changing the encoding or scan mode.`, "err");
-      toast.error(`Extraction failed: ${detail}`);
+      const timedOut = e.code === "ECONNABORTED" || /timeout/i.test(e.message || "");
+      const guidance = timedOut
+        ? "This ROM took longer than 15 minutes to scan. For Pokemon Gen 3, try Pointer scan mode."
+        : "Try changing the encoding or scan mode.";
+      pushLog(`  ${guidance}`, "err");
+      toast.error(timedOut ? guidance : `Extraction failed: ${detail}`);
     }
   };
 
