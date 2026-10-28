@@ -25,6 +25,20 @@ if [[ ! -f "$SOURCE_ROOT/frontend/build/index.html" ]]; then
   exit 1
 fi
 
+NGROK_USER="${SUDO_USER:-pi}"
+NGROK_SERVICE_READY=0
+if [[ "$NGROK_USER" != "root" ]] && getent passwd "$NGROK_USER" >/dev/null 2>&1; then
+  NGROK_HOME="$(getent passwd "$NGROK_USER" | cut -d: -f6)"
+  NGROK_BIN="$(runuser -u "$NGROK_USER" -- env PATH="$NGROK_HOME/.local/bin:$NGROK_HOME/bin:/usr/local/bin:/usr/bin:/bin" sh -c 'command -v ngrok' 2>/dev/null || true)"
+  if [[ -n "$NGROK_BIN" ]] && runuser -u "$NGROK_USER" -- env HOME="$NGROK_HOME" "$NGROK_BIN" config check >/dev/null 2>&1; then
+    NGROK_SERVICE_READY=1
+  else
+    echo "ngrok is not installed or configured for $NGROK_USER; app update will continue without enabling its tunnel service."
+  fi
+else
+  echo "Could not identify the non-root Pi user for ngrok; app update will continue without enabling its tunnel service."
+fi
+
 if ss -H -ltn 'sport = :8081' | grep -q .; then
   if ! systemctl is-active --quiet rom-translator.service || \
     ! grep -Eq '^[[:space:]]*listen[[:space:]]+8081;' /etc/nginx/conf.d/rom-translator.conf 2>/dev/null; then
@@ -63,13 +77,32 @@ install -m 0644 "$SOURCE_ROOT/deploy/raspberry-pi/rom-translator.service" \
   /etc/systemd/system/rom-translator.service
 install -m 0644 "$SOURCE_ROOT/deploy/raspberry-pi/rom-translator.nginx.conf" \
   /etc/nginx/conf.d/rom-translator.conf
+if [[ "$NGROK_SERVICE_READY" -eq 1 ]]; then
+  sed \
+    -e "s|@NGROK_USER@|$NGROK_USER|g" \
+    -e "s|@NGROK_HOME@|$NGROK_HOME|g" \
+    -e "s|@NGROK_BIN@|$NGROK_BIN|g" \
+    "$SOURCE_ROOT/deploy/raspberry-pi/rom-translator-ngrok.service" \
+    > /etc/systemd/system/rom-translator-ngrok.service
+  chmod 0644 /etc/systemd/system/rom-translator-ngrok.service
+fi
 
 nginx -t
 systemctl daemon-reload
 systemctl enable rom-translator.service
 systemctl restart rom-translator.service
 systemctl reload nginx
+if [[ "$NGROK_SERVICE_READY" -eq 1 ]]; then
+  systemctl enable rom-translator-ngrok.service
+  if systemctl is-active --quiet rom-translator-ngrok.service; then
+    systemctl restart rom-translator-ngrok.service
+  fi
+fi
 
 curl --fail --silent --show-error --retry 10 --retry-connrefused \
   http://127.0.0.1:8081/api/
 printf '\nApplication is available at http://%s:8081/\n' "$(hostname -I | awk '{print $1}')"
+if [[ "$NGROK_SERVICE_READY" -eq 1 ]]; then
+  printf 'ngrok tunnel service is enabled and will start on boot.\n'
+  printf 'To start it now, stop any manually running ngrok process, then run: sudo systemctl start rom-translator-ngrok\n'
+fi

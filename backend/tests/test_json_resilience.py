@@ -29,6 +29,8 @@ BASE_URL = (BASE_URL or "").rstrip("/")
 def test_cache_revision_ignores_old_ai_results_and_keeps_manual_entries(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "DB_PATH", tmp_path / "cache.sqlite3")
     server._init_db()
+    with patch.object(server, "CACHE_TRANSLATION_REVISION", "2"):
+        previous_revision_key = server._cache_key("manual from previous revision", "cs")
     asyncio.run(server._cache_store_many([
         {
             "key": server._legacy_cache_key("old automatic", "cs"),
@@ -43,11 +45,29 @@ def test_cache_revision_ignores_old_ai_results_and_keeps_manual_entries(tmp_path
             "target_lang": "cs",
             "manual": True,
         },
+        {
+            "key": previous_revision_key,
+            "source": "manual from previous revision",
+            "translated": "rucni preklad z predchozi revize",
+            "target_lang": "cs",
+            "manual": True,
+        },
+        {
+            "key": server._cache_key("manual from previous revision", "cs"),
+            "source": "manual from previous revision",
+            "translated": "stary automaticky preklad",
+            "target_lang": "cs",
+        },
     ]))
 
-    hits = asyncio.run(server._cache_lookup({"cs": {"old automatic", "manual override"}}))
+    hits = asyncio.run(server._cache_lookup({
+        "cs": {"old automatic", "manual override", "manual from previous revision"}
+    }))
 
-    assert hits == {("cs", "manual override"): "rucne upraveno"}
+    assert hits == {
+        ("cs", "manual override"): "rucne upraveno",
+        ("cs", "manual from previous revision"): "rucni preklad z predchozi revize",
+    }
 
 
 # ---------- _lenient_json_parse ----------
@@ -272,7 +292,8 @@ class TestPromptRules:
         assert "clause, qualifier, and small function word" in p.lower()
         assert "exact page_count and exact number/order of {p} page breaks" in p.lower()
         assert "never split a phrase across pages" in p.lower()
-        assert "reflow lines to the game boy text window width" in p.lower()
+        assert "wrap every line to at most 18 game boy character cells" in p.lower()
+        assert "put a space before {n}" in p.lower()
         assert "you may move {n}" in p.lower()
         assert "add extra {n} tokens between words" in p.lower()
         assert "never add any other token" in p.lower()

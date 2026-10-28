@@ -113,11 +113,13 @@ def test_long_translation_and_reflow_are_accepted_when_tokens_are_preserved():
     source = "Phone numbers are{n}stored in memory.{p}Just choose a name{n}you want to call.{p}Gee, isn't that{n}convenient?"
     oversized = "Telefonni cisla{n}se ukladaji do{p}pameti. Staci vybrat{n}jmeno, kteremu{p}chces zavolat.{p}To je ale pohodlne,{n}co?"
     fitted = "Telefonni cisla{n}jsou v pameti.{p}Staci vybrat{n}jmeno k zavolani.{p}To je pohodlne,{n}ze?"
-    wrapped = "Telefonni{n}cisla se ukladaji do{p}pameti. Staci vybrat{n}jmeno, kteremu{p}chces zavolat.{p}To je ale pohodlne,{n}co?"
+    wrapped = "Telefonni {n}cisla se ukladaji {n}do{p}pameti. Staci {n}vybrat{n}jmeno, kteremu{p}chces zavolat.{p}To je ale pohodlne,{n}co?"
 
     assert _translation_preserves_structure(source, oversized)
     assert _translation_preserves_structure(source, fitted)
-    assert _translation_preserves_structure(source, wrapped)
+    assert _translation_preserves_structure(source, wrapped, "pokemon_gen2")
+    assert not _translation_preserves_structure(source, oversized, "pokemon_gen2")
+    assert not _translation_preserves_structure(source, wrapped.replace("Telefonni {n}", "Telefon{n}ni "), "pokemon_gen2")
     assert not _translation_preserves_structure(source, fitted.replace("{p}", "", 1))
     assert not _translation_preserves_structure(source, wrapped.replace("{p}", "{p}{p}", 1))
     assert not _translation_preserves_structure(source, source.replace("{n}", "", 1).replace("{p}", "{n}{p}", 1))

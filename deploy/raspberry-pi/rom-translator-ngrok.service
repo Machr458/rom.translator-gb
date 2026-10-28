@@ -1,0 +1,17 @@
+[Unit]
+Description=ngrok tunnel for ROM Translator
+Wants=network-online.target
+After=network-online.target rom-translator.service
+
+[Service]
+Type=simple
+User=@NGROK_USER@
+Environment=HOME=@NGROK_HOME@
+ExecStart=@NGROK_BIN@ http 8081
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -34,7 +34,7 @@ import {
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || "";
 const API = `${BACKEND_URL}/api`;
-const APP_VERSION = process.env.REACT_APP_VERSION || "1.2";
+const APP_VERSION = process.env.REACT_APP_VERSION || "dev";
 const UI_LANGUAGE_KEY = "romtrans.ui_language";
 const COPY = {
   en: {
@@ -649,15 +649,15 @@ export default function RomTranslator() {
                 >
                   <FileUp className="w-4 h-4" /> {t.importPatch}
                 </button>
-                <button
-                  onClick={downloadPatched}
-                  disabled={!translations.some((item) => item.translated && item.translated !== item.original)}
-                  className="h-10 flex-1 border border-[#8BAC0F] text-[#9BBC0F] hover:bg-[#8BAC0F]/10 font-mono text-xs uppercase disabled:opacity-40 flex items-center justify-center gap-2"
-                  data-testid="download-btn"
-                >
-                  <Download className="w-4 h-4" /> {t.downloadRom}
-                </button>
               </div>
+              <button
+                onClick={downloadPatched}
+                disabled={!translations.some((item) => item.translated && item.translated !== item.original)}
+                className="mt-2 w-full h-10 bg-[#8BAC0F] text-black font-display font-bold text-xs uppercase rounded-sm btn-brutal disabled:opacity-50 flex items-center justify-center gap-2"
+                data-testid="download-btn"
+              >
+                <Download className="w-3.5 h-3.5" /> {t.downloadRom}
+              </button>
             </section>
           )}
         </section>

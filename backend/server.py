@@ -223,7 +223,7 @@ import hashlib
 
 # In-memory job registry for async translation
 JOBS: dict = {}
-CACHE_TRANSLATION_REVISION = "2"
+CACHE_TRANSLATION_REVISION = "3"
 
 
 def _cache_key(text: str, target_lang: str) -> str:
@@ -272,6 +272,23 @@ async def _cache_lookup(texts_by_lang: dict) -> dict:
                 result_key = (lang, text)
                 if is_current or (row["manual"] and result_key not in hits):
                     hits[result_key] = row["translated"]
+        for lang, texts in texts_by_lang.items():
+            text_list = list(texts)
+            manual_hits = set()
+            for start in range(0, len(text_list), 900):
+                batch = text_list[start:start + 900]
+                placeholders = ",".join("?" for _ in batch)
+                rows = conn.execute(
+                    f"SELECT source, translated FROM translation_cache "
+                    f"WHERE target_lang = ? AND manual = 1 AND source IN ({placeholders}) "
+                    "ORDER BY updated_at DESC",
+                    [lang, *batch],
+                ).fetchall()
+                for row in rows:
+                    result_key = (lang, row["source"])
+                    if result_key not in manual_hits:
+                        hits[result_key] = row["translated"]
+                        manual_hits.add(result_key)
     return hits
 
 
@@ -935,7 +952,7 @@ async def rom_cache_preview(req: CachePreviewRequest):
         translated = hits.get((req.target_language, item.text))
         if translated is None:
             continue
-        if not _translation_preserves_structure(item.text, translated):
+        if not _translation_preserves_structure(item.text, translated, encoding):
             rejected_count += 1
             continue
         translations.append({"id": item.id, "original": item.text, "translated": translated})
@@ -986,8 +1003,9 @@ def _build_translation_prompt(target_lang_name: str, strings: List[ExtractedStri
         "4. Only use printable ASCII characters (a-z, A-Z, 0-9, punctuation, space). No accents, no unicode — Gameboy fonts can't render them.\n"
     )
     wrap_rule = (
-        "For dialogue, reflow lines to the Game Boy text window width (about 18 character cells). Break only between words; "
-        "account for narrow letters, and avoid isolated one-letter lines. You may move {n} to a better word boundary.\n"
+        "For dialogue, wrap every line to at most 18 Game Boy character cells. Break only between words; never put {n} "
+        "between letters in a word. When adding a break between words, put a space before {n}. Account for narrow "
+        "letters and avoid isolated one-letter lines. You may move {n} to a better word boundary.\n"
         if encoding in {"pokemon_gen1", "pokemon_gen2"} else ""
     )
     gloss_rule = (
@@ -1019,6 +1037,11 @@ def _build_translation_prompt(target_lang_name: str, strings: List[ExtractedStri
         f"IMPORTANT RULES:\n"
         f"1. Highest priority: produce a complete, faithful, natural translation of the entire source, including every word, "
         f"clause, qualifier, and small function word. Never abbreviate, clip, summarize, or omit content to fit the original ROM allocation.\n"
+        f"Translate every natural-language string, including story and dialogue, short reactions, menu labels, and instructions. "
+        f"Do not leave a sentence in English just because it is short, isolated, or difficult. Use the other supplied strings as context "
+        f"when they clearly belong together. Prefer idiomatic, natural {target_lang_name} when the meaning and situation are clear; "
+        f"if context is insufficient, use a faithful literal translation and do not invent missing meaning. Leave text unchanged only for "
+        f"protected game names, explicit technical identifiers, or genuine gibberish.\n"
         f"2. Preserve punctuation and any leading/trailing spaces exactly.\n"
         f"3. Do NOT translate obvious code identifiers, file names, register names, or gibberish (return them unchanged).\n"
         f"{charset_rule}"
@@ -1045,7 +1068,7 @@ def _build_translation_prompt(target_lang_name: str, strings: List[ExtractedStri
     )
 
 
-def _translation_preserves_structure(source: str, translated: str) -> bool:
+def _translation_preserves_structure(source: str, translated: str, encoding: str = "ascii") -> bool:
     if not isinstance(translated, str):
         return False
     source_parts = [part for part in re.split(r"(\{[^{}]{1,16}\})", source) if part]
@@ -1067,6 +1090,20 @@ def _translation_preserves_structure(source: str, translated: str) -> bool:
         )
     ):
         return False
+    if encoding in {"pokemon_gen1", "pokemon_gen2"}:
+        if re.search(r"(?<=[A-Za-z0-9À-ž])\{n\}(?=[A-Za-z0-9À-ž])", translated):
+            return False
+        line_cells = 0
+        for part in re.split(r"(\{[^{}]{1,16}\})", translated):
+            if TOKEN_RE.fullmatch(part):
+                if part in BREAK_SET:
+                    if line_cells > 18:
+                        return False
+                    line_cells = 0
+            else:
+                line_cells += len(part)
+        if line_cells > 18:
+            return False
     source_parts = [part for part in re.split(r"(\{[^{}]{1,16}\})", source.replace("{n}", "")) if part]
     translated_parts = [part for part in re.split(r"(\{[^{}]{1,16}\})", translated.replace("{n}", "")) if part]
     for source_part, translated_part in zip(source_parts, translated_parts):
@@ -1229,7 +1266,7 @@ async def _translate_batch(
     prompt = _build_translation_prompt(target_lang_name, protected_batch, encoding)
     if _retry:
         prompt += (
-            "\nCORRECTION: The previous answer changed required page/control tokens. Rewrite the complete translation without abbreviating or dropping meaning. "
+            "\nCORRECTION: The previous answer changed required page/control tokens or violated line wrapping. Rewrite the complete translation without abbreviating or dropping meaning. "
             "Preserve every token and page_count exactly; ROM storage capacity is not a reason to shorten it."
         )
 
@@ -1291,7 +1328,7 @@ async def _translate_batch(
             retry_items.append(s)
             continue
         tr = restore_glossary_terms(tr, protected_terms[s.id])
-        if not _translation_preserves_structure(s.text, tr):
+        if not _translation_preserves_structure(s.text, tr, encoding):
             retry_items.append(s)
         else:
             results_by_id[s.id] = tr
@@ -1419,7 +1456,7 @@ async def translate_rom_start(req: TranslateRequest):
             if cached_translation is None:
                 remaining.append(s)
             elif cached_translation.strip() != s.text.strip() and _translation_preserves_structure(
-                s.text, cached_translation
+                s.text, cached_translation, job_encoding
             ):
                 cached_out.append(TranslatedString(id=s.id, original=s.text, translated=cached_translation))
             else:
