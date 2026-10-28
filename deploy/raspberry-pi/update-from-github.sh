@@ -14,24 +14,49 @@ if ! command -v curl >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1; th
   exit 1
 fi
 
-ASSET_URL="$(curl --fail --silent --show-error "$API_URL" | python3 -c '
+TEMP_DIR="$(mktemp -d)"
+trap 'rm -rf "$TEMP_DIR"' EXIT
+RELEASE_JSON="$TEMP_DIR/release.json"
+
+if ! HTTP_STATUS="$(curl --silent --show-error --retry 3 \
+  --output "$RELEASE_JSON" --write-out '%{http_code}' "$API_URL")"; then
+  echo "Could not reach the GitHub Releases API. Check the Pi internet connection and try again." >&2
+  exit 1
+fi
+
+if [[ "$HTTP_STATUS" == "404" ]]; then
+  echo "No GitHub release is published yet. Push a vMAJOR.MINOR tag and wait for its release workflow to finish." >&2
+  exit 1
+fi
+
+if [[ "$HTTP_STATUS" != "200" ]]; then
+  echo "GitHub Releases API returned HTTP $HTTP_STATUS. Try again later." >&2
+  exit 1
+fi
+
+ASSET_URL="$(python3 - "$RELEASE_JSON" <<'PY'
 import json
 import re
 import sys
 
-release = json.load(sys.stdin)
+try:
+    with open(sys.argv[1], encoding="utf-8") as response:
+        release = json.load(response)
+except (OSError, json.JSONDecodeError):
+    raise SystemExit("GitHub returned an invalid release response.")
+
 assets = [
     asset["browser_download_url"]
     for asset in release.get("assets", [])
     if re.fullmatch(r"rom-translator-update-v\d+\.\d+\.tar\.gz", asset.get("name", ""))
+    and asset.get("browser_download_url")
 ]
 if not assets:
-    raise SystemExit("Latest GitHub release has no Raspberry Pi update archive.")
+    raise SystemExit("Latest GitHub release has no Raspberry Pi update archive. Wait for the release workflow to finish.")
 print(assets[0])
-')"
+PY
+)"
 
-TEMP_DIR="$(mktemp -d)"
-trap 'rm -rf "$TEMP_DIR"' EXIT
 ARCHIVE="$TEMP_DIR/update.tar.gz"
 
 echo "Downloading latest ROM Translator release..."
